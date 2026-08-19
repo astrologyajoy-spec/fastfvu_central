@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { Play, Copy, Check, Terminal, FileCode, CheckCircle2, AlertCircle, RefreshCw } from 'lucide-react';
+import { FVU_GENERATE_URL } from '../config';
 
 export function ApiPlayground() {
   const [activeTab, setActiveTab] = useState<'playground' | 'curl' | 'node' | 'python' | 'php' | 'js'>('playground');
@@ -30,7 +31,7 @@ export function ApiPlayground() {
         payload = { statementData: statementText };
       }
 
-      const res = await fetch('/api/v1/fvu/generate', {
+      const res = await fetch(FVU_GENERATE_URL, {
         method: 'POST',
         headers: { 
           'Content-Type': 'application/json',

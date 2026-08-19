@@ -3,6 +3,7 @@ import {
   LogOut, Sun, Moon, LayoutDashboard, Key, Clock, Download, 
   AlertCircle, CheckCircle2, Copy, Check, UploadCloud, RefreshCw, Eye, EyeOff, Plus, FileText, Activity, X, FileCheck, ShieldAlert
 } from 'lucide-react';
+import { BACKEND_URL, FVU_VALIDATE_URL, FVU_LOGS_URL } from '../config';
 
 interface UserDashboardProps {
   userSession: { email: string; apiKey: string };
@@ -29,7 +30,7 @@ export function UserDashboard({ userSession, onSignOut }: UserDashboardProps) {
 
   const fetchLogs = async () => {
     try {
-      const res = await fetch('/api/fvu/logs');
+      const res = await fetch(FVU_LOGS_URL);
       const data = await res.json();
       if (data.logs) {
         setLogs(data.logs);
@@ -76,7 +77,7 @@ export function UserDashboard({ userSession, onSignOut }: UserDashboardProps) {
     }
 
     try {
-      const res = await fetch('/api/fvu/validate', {
+      const res = await fetch(FVU_VALIDATE_URL, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -319,7 +320,7 @@ export function UserDashboard({ userSession, onSignOut }: UserDashboardProps) {
                     <div className="flex items-center space-x-2">
                       {validationResult.status === 'SUCCESS' && validationResult.fvuFileName && (
                         <a
-                          href={`/api/v1/fvu/download/${validationResult.fvuFileName}`}
+                          href={`${BACKEND_URL}/api/v1/fvu/download/${validationResult.fvuFileName}`}
                           download
                           className="px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-semibold flex items-center space-x-1.5 shadow-sm"
                         >
@@ -329,7 +330,7 @@ export function UserDashboard({ userSession, onSignOut }: UserDashboardProps) {
                       )}
                       {validationResult.status === 'FAILED' && validationResult.errorFileName && (
                         <a
-                          href={`/api/v1/fvu/download/${validationResult.errorFileName}`}
+                          href={`${BACKEND_URL}/api/v1/fvu/download/${validationResult.errorFileName}`}
                           download
                           className="px-3 py-1.5 rounded-lg bg-red-600 hover:bg-red-700 text-white text-xs font-semibold flex items-center space-x-1.5 shadow-sm"
                         >
@@ -386,7 +387,7 @@ export function UserDashboard({ userSession, onSignOut }: UserDashboardProps) {
                             {log.output_filename ? (
                               <div className="flex items-center space-x-2">
                                 <a 
-                                  href={`/api/v1/fvu/download/${log.output_filename}`} 
+                                  href={`${BACKEND_URL}/api/v1/fvu/download/${log.output_filename}`} 
                                   download 
                                   className={`inline-flex items-center space-x-1 text-xs font-medium px-2.5 py-1 rounded-lg transition-colors ${
                                     log.status === 'SUCCESS'
@@ -524,7 +525,7 @@ export function UserDashboard({ userSession, onSignOut }: UserDashboardProps) {
                             {log.output_filename ? (
                               <div className="flex items-center space-x-2">
                                 <a 
-                                  href={`/api/v1/fvu/download/${log.output_filename}`} 
+                                  href={`${BACKEND_URL}/api/v1/fvu/download/${log.output_filename}`} 
                                   download 
                                   className={`inline-flex items-center space-x-1 text-xs font-medium px-3 py-1.5 rounded-lg transition-colors ${
                                     log.status === 'SUCCESS'
@@ -612,7 +613,7 @@ export function UserDashboard({ userSession, onSignOut }: UserDashboardProps) {
             <div className="pt-3 border-t border-slate-200 dark:border-slate-800 flex justify-between items-center">
               {selectedErrorModal.outputFileName ? (
                 <a
-                  href={`/api/v1/fvu/download/${selectedErrorModal.outputFileName}`}
+                  href={`${BACKEND_URL}/api/v1/fvu/download/${selectedErrorModal.outputFileName}`}
                   download
                   className="inline-flex items-center space-x-1.5 px-4 py-2 rounded-xl bg-red-600 hover:bg-red-700 text-white text-xs font-semibold shadow-sm"
                 >

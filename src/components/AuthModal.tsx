@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { X, Key, CheckCircle2, Copy, Check, ArrowRight, Loader2 } from 'lucide-react';
 import { GoogleLogin } from '@react-oauth/google';
+import { AUTH_GOOGLE_URL } from '../config';
 
 interface AuthModalProps {
   isOpen: boolean;
@@ -22,23 +23,27 @@ export function AuthModal({ isOpen, onClose, onLoginSuccess }: AuthModalProps) {
     setLoading(true);
     setError(null);
     try {
-      const res = await fetch('/api/auth/google', {
+      const res = await fetch(AUTH_GOOGLE_URL, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 
+          'Content-Type': 'application/json',
+          'Accept': 'application/json'
+        },
         body: JSON.stringify({ credential: credentialResponse.credential })
       });
+      
       const data = await res.json();
       
-      if (data.success && data.apiKey) {
+      if (res.ok && data.success && data.apiKey) {
         setUserEmail(data.email);
         setGeneratedKey(data.apiKey);
         setIsRegistered(true);
       } else {
-        setError(data.error || 'Authentication failed');
+        setError(data.error || 'Authentication failed. Please verify credentials.');
       }
-    } catch (err) {
-      console.error(err);
-      setError('An error occurred during authentication');
+    } catch (err: any) {
+      console.error('Google Auth Error:', err);
+      setError(err?.message || 'An error occurred during authentication with Render backend.');
     } finally {
       setLoading(false);
     }
