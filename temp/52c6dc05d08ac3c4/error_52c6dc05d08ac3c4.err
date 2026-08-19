@@ -1,0 +1,4 @@
+NSDL Standalone Engine Error:
+------------------------------------
+Java Runtime Environment (JRE) is not available in current container PATH. Ensure Java 8/11/17 is installed to execute NSDL Standalone JAR.
+Command: java -Dfile.encoding=UTF-8 -jar /app/applet/bin/1TDS_STANDALONE_FVU_1.1.jar /app/applet/temp/52c6dc05d08ac3c4/140_52c6dc05d08ac3c4.txt /app/applet/temp/52c6dc05d08ac3c4/error_52c6dc05d08ac3c4.err /app/applet/temp/52c6dc05d08ac3c4/output_52c6dc05d08ac3c4.fvu 0 /app/applet/temp/52c6dc05d08ac3c4/CALB09143B080826_52c6dc05d08ac3c4.csi 0 1.1

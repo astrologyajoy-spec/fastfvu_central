@@ -1,0 +1,6 @@
+{
+  "name": "FastFVU Central",
+  "description": "Central developer portal and SaaS landing page for Java-based Tax File Validation (FVU) engine with API integration.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
