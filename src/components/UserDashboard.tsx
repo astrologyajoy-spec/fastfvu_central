@@ -602,7 +602,7 @@ export function UserDashboard({ userSession, onSignOut }: UserDashboardProps) {
                       <span>Line {err.line || idx + 1}</span>
                       <span>{err.code || 'ERR_NSDL'}</span>
                     </div>
-                    <p className="text-slate-700 dark:text-slate-300 font-sans">{err.message || JSON.stringify(err)}</p>
+                    <p className="text-slate-700 dark:text-slate-300 font-sans">{typeof err.message === 'string' ? err.message : (typeof err === 'string' ? err : JSON.stringify(err))}</p>
                   </div>
                 ))
               ) : (
