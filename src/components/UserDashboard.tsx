@@ -31,12 +31,17 @@ export function UserDashboard({ userSession, onSignOut }: UserDashboardProps) {
   const fetchLogs = async () => {
     try {
       const res = await fetch(FVU_LOGS_URL);
-      const data = await res.json();
-      if (data.logs) {
-        setLogs(data.logs);
+      const text = await res.text();
+      try {
+        const data = JSON.parse(text);
+        if (data && Array.isArray(data.logs)) {
+          setLogs(data.logs);
+        }
+      } catch (jsonErr) {
+        console.warn('Non-JSON logs response:', text.slice(0, 100));
       }
     } catch (err) {
-      console.error('Failed to fetch logs', err);
+      console.warn('Failed to fetch logs', err);
     }
   };
 
@@ -88,12 +93,19 @@ export function UserDashboard({ userSession, onSignOut }: UserDashboardProps) {
           csiFileContent: csiFileContent
         })
       });
-      const data = await res.json();
+      
+      let data: any = {};
+      try {
+        const text = await res.text();
+        data = JSON.parse(text);
+      } catch (parseErr) {
+        data = { status: 'FAILED', errors: [{ line: 1, code: 'ERR_SRV', message: 'Unexpected server response' }] };
+      }
       
       if (!res.ok || data.status === 'FAILED') {
         setValidationResult({
           status: 'FAILED',
-          message: 'NSDL Java FVU Validation failed. Please check error report.',
+          message: data.error || 'NSDL Java FVU Validation failed. Please check error report.',
           errorFileName: data.errorFileName,
           errors: data.errors || []
         });
