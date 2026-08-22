@@ -1,6 +1,6 @@
-import { pool } from '../_lib/db';
-import { generateNativeNodeFVU } from '../../src/lib/fvuEngine';
-import { uploadToSupabase } from '../../src/lib/storage';
+import { pool } from '../_lib/db.js';
+import { generateNativeNodeFVU } from '../../src/lib/fvuEngine.js';
+import { uploadToSupabase } from '../../src/lib/storage.js';
 
 export default async function handler(req: any, res: any) {
   // Always ensure JSON content type
