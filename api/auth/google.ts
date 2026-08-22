@@ -1,5 +1,5 @@
 import { OAuth2Client } from 'google-auth-library';
-import { pool } from '../../src/lib/db';
+import { pool } from '../_lib/db';
 
 const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID || "517384935957-14rlq2ost4h9hmnv0l1ftm36lj434947.apps.googleusercontent.com";
 let googleClient: OAuth2Client | null = null;

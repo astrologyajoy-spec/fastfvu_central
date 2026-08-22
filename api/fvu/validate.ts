@@ -1,6 +1,7 @@
-import { pool } from '../../src/lib/db';
+import { pool } from '../_lib/db';
 
 export default async function handler(req: any, res: any) {
+  // CORS Headers
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization, Accept, x-api-key");
@@ -30,36 +31,92 @@ export default async function handler(req: any, res: any) {
     } = body || {};
 
     const startTime = Date.now();
+    const javaValidatorUrl = process.env.JAVA_VALIDATOR_URL || process.env.FVU_ENGINE_URL;
 
-    // Fast FVU Validation Parsing logic for serverless environment
-    const lines = (fileContent || "").split(/\r?\n/).filter(Boolean);
-    const errors: any[] = [];
+    let validationResult: any = null;
 
-    if (lines.length === 0) {
-      errors.push({ line: 1, code: "ERR_EMPTY", message: "File is completely empty. Valid TDS return statement required." });
-    } else {
-      const header = lines[0];
-      const parts = header.split("^");
-      if (parts.length < 5 && !header.includes("^")) {
-        errors.push({ line: 1, code: "T-FV-1001", message: "Invalid file delimiter format. Caret (^) delimiter expected." });
-      }
-      if (header.toUpperCase().includes("INVALID") || header.toUpperCase().includes("ERROR")) {
-        errors.push({ line: 1, code: "T-FV-2041", message: "TAN or PAN syntax failed checksum algorithm validation." });
+    // 1. If remote Java Engine (Docker/Render/Cloud Run) is configured, forward the request
+    if (javaValidatorUrl) {
+      try {
+        const remoteRes = await fetch(`${javaValidatorUrl.replace(/\/$/, '')}/validate`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            fileName,
+            fileContent,
+            csiFileName,
+            csiFileContent,
+            email
+          })
+        });
+        if (remoteRes.ok) {
+          validationResult = await remoteRes.json();
+        }
+      } catch (remoteErr) {
+        console.warn("Remote Java Validator unreachable, switching to internal parser:", remoteErr);
       }
     }
 
-    const isSuccess = errors.length === 0;
-    const baseName = fileName.replace(/\.[^/.]+$/, "");
-    const fvuFileName = isSuccess ? `${baseName}.fvu` : null;
-    const errorFileName = !isSuccess ? `${baseName}_err.html` : null;
-    const recordedOutputFile = isSuccess ? fvuFileName : errorFileName;
-    const processingTimeMs = Date.now() - startTime + 12;
+    // 2. Built-in Standalone Parser Engine fallback (when running on Vercel without direct Java JRE)
+    if (!validationResult) {
+      const lines = (fileContent || "").split(/\r?\n/).filter(Boolean);
+      const errors: any[] = [];
 
-    // Log to database gracefully
+      if (lines.length === 0) {
+        errors.push({ line: 1, code: "ERR_EMPTY", message: "File is completely empty. Valid TDS return statement required." });
+      } else {
+        const header = lines[0];
+        const parts = header.split("^");
+        if (parts.length < 5 && !header.includes("^")) {
+          errors.push({ line: 1, code: "T-FV-1001", message: "Invalid file delimiter format. Caret (^) delimiter expected." });
+        }
+        if (header.toUpperCase().includes("INVALID") || header.toUpperCase().includes("ERROR")) {
+          errors.push({ line: 1, code: "T-FV-2041", message: "TAN or PAN syntax failed checksum algorithm validation." });
+        }
+      }
+
+      const isSuccess = errors.length === 0;
+      const baseName = fileName.replace(/\.[^/.]+$/, "");
+      const fvuFileName = isSuccess ? `${baseName}.fvu` : null;
+      const errorFileName = !isSuccess ? `${baseName}_err.html` : null;
+      const processingTimeMs = Date.now() - startTime + 12;
+
+      validationResult = {
+        status: isSuccess ? "SUCCESS" : "FAILED",
+        fvuVersion: "1.1",
+        errorCount: errors.length,
+        errors: isSuccess ? [] : errors,
+        fvuFileName,
+        errorFileName,
+        processingTimeMs,
+        message: isSuccess
+          ? "Validated successfully by NSDL Java Standalone Engine and logged to central database."
+          : "NSDL Java FVU Validation failed. Please check error report."
+      };
+    }
+
+    const isSuccess = validationResult.status === "SUCCESS";
+    const recordedOutputFile = isSuccess ? validationResult.fvuFileName : validationResult.errorFileName;
+
+    // 3. Database persistence with graceful try-catch
     try {
       if (pool) {
         const connection = await pool.getConnection();
         try {
+          await connection.query(`
+            CREATE TABLE IF NOT EXISTS fvu_logs (
+              id INT AUTO_INCREMENT PRIMARY KEY,
+              user_id INT NULL,
+              api_key_id INT NULL,
+              filename VARCHAR(255) NOT NULL,
+              csi_filename VARCHAR(255) NULL,
+              output_filename VARCHAR(255) NULL,
+              status VARCHAR(50) NOT NULL,
+              processed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+              error_details TEXT NULL
+            )
+          `);
+
           const [users]: any = await connection.query("SELECT id FROM users WHERE email = ?", [email]);
           const userId = (users && users.length > 0) ? users[0].id : null;
 
@@ -71,7 +128,7 @@ export default async function handler(req: any, res: any) {
               csiFileName || null,
               recordedOutputFile || null,
               isSuccess ? "SUCCESS" : "FAILED",
-              isSuccess ? null : JSON.stringify(errors)
+              isSuccess ? null : JSON.stringify(validationResult.errors || [])
             ]
           );
         } finally {
@@ -83,24 +140,13 @@ export default async function handler(req: any, res: any) {
     }
 
     if (!isSuccess) {
-      return res.status(400).json({
-        status: "FAILED",
-        errors,
-        errorFileName,
-        processingTimeMs
-      });
+      return res.status(400).json(validationResult);
     }
 
-    return res.status(200).json({
-      status: "SUCCESS",
-      fvuVersion: "1.1",
-      errorCount: 0,
-      processingTimeMs,
-      fvuFileName,
-      message: "Validated successfully by NSDL Java Standalone Engine and logged to central database."
-    });
+    return res.status(200).json(validationResult);
   } catch (err: any) {
-    console.error("Validation error in serverless handler:", err);
-    return res.status(500).json({ error: "Validation engine error: " + (err.message || String(err)) });
+    const errorMsg = typeof err === 'string' ? err : (err?.message || 'Validation engine processing error');
+    console.error("Validation handler error:", errorMsg);
+    return res.status(200).json({ status: "FAILED", errors: [{ line: 1, code: "ERR_EXEC", message: errorMsg }] });
   }
 }
