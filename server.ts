@@ -5,7 +5,6 @@ import path from "path";
 import dotenv from "dotenv";
 import { OAuth2Client } from "google-auth-library";
 import { pool } from "./src/lib/db";
-import { createServer as createViteServer } from "vite";
 
 dotenv.config();
 
@@ -546,7 +545,6 @@ app.get("/api/v1/fvu/download", async (req, res) => {
   }
 
   // Fallback to local temp directory (for Render execution)
-  const path = require('path');
   const parts = filename.split('_');
   const sessionId = parts.length >= 2 ? parts[1].split('.')[0] : 'default';
   const filePath = path.join(process.cwd(), 'temp', sessionId, filename);
@@ -569,6 +567,7 @@ app.get("/api/v1/fvu/download", async (req, res) => {
 async function startServer() {
   await initDB();
   if (process.env.NODE_ENV !== "production") {
+    const { createServer: createViteServer } = await import("vite");
     const vite = await createViteServer({
       server: { middlewareMode: true },
       appType: "spa",
