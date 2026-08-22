@@ -2,6 +2,13 @@ const fs = require('fs');
 const path = require('path');
 const mysql = require('mysql2/promise');
 
+let createClient;
+try {
+  createClient = require('@supabase/supabase-js').createClient;
+} catch (e) {
+  console.warn("Could not require @supabase/supabase-js directly, will fallback to HTTP REST where needed:", e.message);
+}
+
 async function run() {
   console.log("=========================================================");
   console.log("     FastFVU Central - GitHub Runner Output Sync         ");
@@ -39,11 +46,13 @@ async function run() {
     targetPath = errPath;
     outputFileName = errFileName;
   } else {
-    // Check if any .fvu or .err exists in workDir
+    // Check if any .fvu or .err or .txt exists in workDir
     if (fs.existsSync(workDir)) {
       const files = fs.readdirSync(workDir);
       const foundFvu = files.find(f => f.endsWith('.fvu'));
       const foundErr = files.find(f => f.endsWith('.err'));
+      const foundTxt = files.find(f => f.endsWith('.txt') && f !== fileName);
+      
       if (foundFvu && fs.statSync(path.join(workDir, foundFvu)).size > 0) {
         isSuccess = true;
         targetPath = path.join(workDir, foundFvu);
@@ -52,6 +61,10 @@ async function run() {
         isSuccess = false;
         targetPath = path.join(workDir, foundErr);
         outputFileName = foundErr;
+      } else if (foundTxt) {
+        isSuccess = false;
+        targetPath = path.join(workDir, foundTxt);
+        outputFileName = foundTxt;
       }
     }
   }
@@ -89,38 +102,86 @@ async function run() {
   console.log(`Output File       : ${outputFileName || "None"}`);
   console.log(`Diagnostic Log:\n${logMessage}`);
 
-  // 1. Upload to Supabase Storage if configured
-  let downloadUrl = null;
+  // 1. Upload to Supabase Storage 'fvu-reports' bucket using @supabase/supabase-js
+  let publicUrl = null;
   const supabaseUrl = process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL;
   const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_ANON_KEY;
-  const bucketName = process.env.SUPABASE_BUCKET_NAME || "fvu-logs";
+  const bucketName = process.env.SUPABASE_BUCKET_NAME || "fvu-reports";
 
-  if (targetPath && fs.existsSync(targetPath) && supabaseUrl && supabaseKey) {
-    try {
-      const fileBuffer = fs.readFileSync(targetPath);
-      const uploadUrl = `${supabaseUrl}/storage/v1/object/${bucketName}/${outputFileName}`;
-      console.log(`Uploading ${outputFileName} to Supabase: ${uploadUrl}`);
-      
-      const res = await fetch(uploadUrl, {
-        method: "POST",
-        headers: {
-          "Authorization": `Bearer ${supabaseKey}`,
-          "Content-Type": "application/octet-stream",
-          "x-upsert": "true"
-        },
-        body: fileBuffer
-      });
-
-      if (res.ok) {
-        downloadUrl = `${supabaseUrl}/storage/v1/object/public/${bucketName}/${outputFileName}`;
-        console.log(`Uploaded to Supabase successfully. URL: ${downloadUrl}`);
-      } else {
-        const errTxt = await res.text();
-        console.warn(`Supabase upload returned status ${res.status}: ${errTxt}`);
-      }
-    } catch (supErr) {
-      console.error("Supabase upload exception:", supErr);
+  if (supabaseUrl && supabaseKey) {
+    console.log(`Initializing Supabase client for bucket '${bucketName}'...`);
+    let supabase = null;
+    if (createClient) {
+      supabase = createClient(supabaseUrl, supabaseKey);
     }
+
+    // Upload all generated files in output folder (.fvu, .err, .txt)
+    if (fs.existsSync(workDir)) {
+      const filesInWorkDir = fs.readdirSync(workDir);
+      for (const file of filesInWorkDir) {
+        if (file.endsWith('.fvu') || file.endsWith('.err') || file.endsWith('.txt')) {
+          const filePath = path.join(workDir, file);
+          if (fs.statSync(filePath).isFile()) {
+            try {
+              const fileBuffer = fs.readFileSync(filePath);
+              console.log(`Uploading ${file} to Supabase bucket '${bucketName}'...`);
+              
+              if (supabase) {
+                const { data: uploadData, error: uploadError } = await supabase.storage
+                  .from(bucketName)
+                  .upload(file, fileBuffer, {
+                    contentType: "application/octet-stream",
+                    upsert: true
+                  });
+
+                if (uploadError) {
+                  console.warn(`Supabase JS client upload warning for ${file}:`, uploadError.message);
+                } else {
+                  console.log(`Successfully uploaded ${file} via Supabase JS client.`);
+                }
+              } else {
+                // Fallback to HTTP API
+                const uploadUrl = `${supabaseUrl}/storage/v1/object/${bucketName}/${file}`;
+                const res = await fetch(uploadUrl, {
+                  method: "POST",
+                  headers: {
+                    "Authorization": `Bearer ${supabaseKey}`,
+                    "Content-Type": "application/octet-stream",
+                    "x-upsert": "true"
+                  },
+                  body: fileBuffer
+                });
+                if (res.ok) {
+                  console.log(`Successfully uploaded ${file} via Supabase REST API.`);
+                }
+              }
+            } catch (upErr) {
+              console.error(`Failed uploading ${file} to Supabase:`, upErr);
+            }
+          }
+        }
+      }
+    }
+
+    // Obtain Public URL using supabase.storage.from('fvu-reports').getPublicUrl(outputFileName || filename)
+    const targetFileForUrl = outputFileName || fvuFileName;
+    if (supabase) {
+      const { data: urlData } = supabase.storage
+        .from(bucketName)
+        .getPublicUrl(targetFileForUrl);
+
+      if (urlData && urlData.publicUrl) {
+        publicUrl = urlData.publicUrl;
+      }
+    }
+    
+    if (!publicUrl) {
+      publicUrl = `${supabaseUrl}/storage/v1/object/public/${bucketName}/${targetFileForUrl}`;
+    }
+
+    console.log(`Public URL obtained: ${publicUrl}`);
+  } else {
+    console.warn("Supabase credentials not set in environment. Skipping Supabase Storage upload.");
   }
 
   // 2. Sync to TiDB / MySQL Database
@@ -140,25 +201,38 @@ async function run() {
 
     const statusVal = isSuccess ? "COMPLETED" : "FAILED";
 
+    // Ensure download_url column exists
+    try {
+      await connection.query("ALTER TABLE fvu_logs ADD COLUMN download_url VARCHAR(512) NULL");
+    } catch (e) {}
+
     // Find user ID by email
     const [users] = await connection.query("SELECT id FROM users WHERE email = ?", [email]);
     const userId = (users && users.length > 0) ? users[0].id : null;
 
-    // Check if a log entry already exists for this filename or if we should insert
-    await connection.query(
-      `INSERT INTO fvu_logs (user_id, filename, csi_filename, output_filename, status, error_details) 
-       VALUES (?, ?, ?, ?, ?, ?)`,
-      [
-        userId,
-        fileName,
-        csiFileName,
-        outputFileName,
-        statusVal,
-        logMessage
-      ]
+    // Check if there is a recent PENDING/PROCESSING job for this file or job
+    const [pendingRows] = await connection.query(
+      "SELECT id FROM fvu_logs WHERE filename = ? AND status IN ('PENDING', 'PROCESSING') ORDER BY id DESC LIMIT 1",
+      [fileName]
     );
 
-    console.log(`Successfully recorded log entry in TiDB database with status '${statusVal}'.`);
+    if (pendingRows && pendingRows.length > 0) {
+      await connection.query(
+        `UPDATE fvu_logs 
+         SET output_filename = ?, status = ?, error_details = ?, download_url = ? 
+         WHERE id = ?`,
+        [outputFileName || fvuFileName, statusVal, logMessage, publicUrl, pendingRows[0].id]
+      );
+      console.log(`Updated existing log record #${pendingRows[0].id} with status '${statusVal}'.`);
+    } else {
+      await connection.query(
+        `INSERT INTO fvu_logs (user_id, filename, csi_filename, output_filename, status, error_details, download_url) 
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        [userId, fileName, csiFileName, outputFileName || fvuFileName, statusVal, logMessage, publicUrl]
+      );
+      console.log(`Inserted new log record with status '${statusVal}'.`);
+    }
+
     await connection.end();
   } catch (dbErr) {
     console.error("TiDB database update error:", dbErr);

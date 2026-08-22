@@ -540,66 +540,155 @@ app.post("/api/v1/fvu/generate", async (req, res) => {
 
 
 
+// Check Job Status
+app.get("/api/fvu/status", async (req, res) => {
+  const filename = (req.query.filename || req.query.file_name || req.query.jobId) as string;
+  if (!filename) {
+    return res.status(200).json({ status: "PROCESSING", message: "No filename provided" });
+  }
+
+  const supabaseUrl = process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const bucketName = process.env.SUPABASE_BUCKET_NAME || 'fvu-reports';
+
+  try {
+    const [rows]: any = await pool.query(
+      `SELECT id, filename, output_filename, status, error_details, download_url 
+       FROM fvu_logs 
+       WHERE filename = ? OR output_filename = ? 
+       ORDER BY id DESC LIMIT 1`,
+      [filename, filename]
+    );
+
+    if (!rows || rows.length === 0) {
+      return res.status(200).json({ status: "PROCESSING", message: "Job awaiting runner execution..." });
+    }
+
+    const log = rows[0];
+    const targetFile = log.output_filename || filename;
+    let publicUrl = log.download_url;
+    if (!publicUrl && supabaseUrl && targetFile) {
+      publicUrl = `${supabaseUrl}/storage/v1/object/public/${bucketName}/${targetFile}`;
+    }
+
+    if (log.status === 'PENDING' || log.status === 'PROCESSING') {
+      return res.status(200).json({ status: "PROCESSING", message: "Validation in progress..." });
+    }
+
+    if (log.status === 'COMPLETED' || log.status === 'SUCCESS') {
+      return res.status(200).json({
+        status: "COMPLETED",
+        filename: targetFile,
+        publicUrl,
+        downloadUrl: publicUrl,
+        message: "Validation completed successfully."
+      });
+    }
+
+    return res.status(200).json({
+      status: "FAILED",
+      filename: targetFile,
+      publicUrl,
+      downloadUrl: publicUrl,
+      error_details: log.error_details,
+      message: "Validation failed."
+    });
+  } catch (err: any) {
+    console.error("Express status endpoint error:", err);
+    return res.status(200).json({ status: "PROCESSING", message: "Checking status..." });
+  }
+});
+
 // Download FVU or Error file
 app.get("/api/v1/fvu/download", async (req, res) => {
-  const filename = req.query.filename;
+  const filename = req.query.filename as string;
+  const wantsJson = req.query.json === 'true' || req.headers.accept?.includes('application/json');
+
   if (!filename || typeof filename !== 'string') {
     return res.status(400).send("Filename is required");
   }
 
-  const supabaseUrl = process.env.SUPABASE_URL;
-  const bucketName = process.env.SUPABASE_BUCKET_NAME || 'fvu-logs';
+  const supabaseUrl = process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const bucketName = process.env.SUPABASE_BUCKET_NAME || 'fvu-reports';
 
-  if (supabaseUrl) {
-    try {
+  try {
+    // 1. Check DB first
+    const [rows]: any = await pool.query(
+      `SELECT id, filename, output_filename, status, download_url 
+       FROM fvu_logs 
+       WHERE filename = ? OR output_filename = ? 
+       ORDER BY id DESC LIMIT 1`,
+      [filename, filename]
+    );
+
+    if (rows && rows.length > 0) {
+      const log = rows[0];
+      if (log.status === 'PENDING' || log.status === 'PROCESSING') {
+        return res.status(200).json({ 
+          status: "PROCESSING", 
+          message: "Validation in progress on GitHub Actions Runner..." 
+        });
+      }
+
+      const publicUrl = log.download_url || (supabaseUrl ? `${supabaseUrl}/storage/v1/object/public/${bucketName}/${log.output_filename || filename}` : null);
+      if (publicUrl) {
+        if (wantsJson) {
+          return res.status(200).json({
+            status: log.status === 'FAILED' ? 'FAILED' : 'COMPLETED',
+            filename: log.output_filename || filename,
+            publicUrl,
+            downloadUrl: publicUrl
+          });
+        }
+        return res.redirect(302, publicUrl);
+      }
+    }
+
+    // 2. Direct Supabase storage check
+    if (supabaseUrl) {
       const publicUrl = `${supabaseUrl}/storage/v1/object/public/${bucketName}/${filename}`;
-      const response = await fetch(publicUrl);
-      
+      const response = await fetch(publicUrl, { method: 'HEAD' });
       if (response.ok) {
+        if (wantsJson) {
+          return res.status(200).json({
+            status: "COMPLETED",
+            filename,
+            publicUrl,
+            downloadUrl: publicUrl
+          });
+        }
+        return res.redirect(302, publicUrl);
+      }
+    }
+
+    // 3. Fallback to local files
+    const parts = filename.split('_');
+    const sessionId = parts.length >= 2 ? parts[1].split('.')[0] : 'default';
+    const candidatePaths = [
+      path.resolve(os.tmpdir(), 'fastfvu', sessionId, filename),
+      path.resolve(os.tmpdir(), filename),
+      path.resolve(process.cwd(), 'temp', sessionId, filename),
+      path.resolve(process.cwd(), filename)
+    ];
+
+    for (const cPath of candidatePaths) {
+      try {
+        const fsModule = await import('fs/promises');
+        const fileBuffer = await fsModule.readFile(cPath);
         res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
         res.setHeader("Content-Type", "application/octet-stream");
-        const buffer = await response.arrayBuffer();
-        return res.status(200).send(Buffer.from(buffer));
-      } else {
-        const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_ANON_KEY;
-        if (supabaseKey) {
-          const authResponse = await fetch(`${supabaseUrl}/storage/v1/object/authenticated/${bucketName}/${filename}`, {
-            headers: { 'Authorization': `Bearer ${supabaseKey}` }
-          });
-          if (authResponse.ok) {
-            res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
-            res.setHeader("Content-Type", "application/octet-stream");
-            const buffer = await authResponse.arrayBuffer();
-            return res.status(200).send(Buffer.from(buffer));
-          }
-        }
-      }
-    } catch (err) {
-      console.warn("Supabase fetch failed, falling back to local temp:", err);
+        return res.status(200).send(fileBuffer);
+      } catch (e) {}
     }
+
+    return res.status(200).json({ 
+      status: "PROCESSING", 
+      message: "File processing or awaiting storage upload." 
+    });
+
+  } catch (err) {
+    console.warn("Download endpoint exception:", err);
+    return res.status(200).json({ status: "PROCESSING", message: "Checking status..." });
   }
-
-  // Fallback to os.tmpdir() and local temp directories
-  const parts = filename.split('_');
-  const sessionId = parts.length >= 2 ? parts[1].split('.')[0] : 'default';
-  const candidatePaths = [
-    path.resolve(os.tmpdir(), 'fastfvu', sessionId, filename),
-    path.resolve(os.tmpdir(), filename),
-    path.resolve(process.cwd(), 'temp', sessionId, filename),
-    path.resolve(process.cwd(), filename)
-  ];
-
-  for (const cPath of candidatePaths) {
-    try {
-      const fsModule = await import('fs/promises');
-      const fileBuffer = await fsModule.readFile(cPath);
-      res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
-      res.setHeader("Content-Type", "application/octet-stream");
-      return res.status(200).send(fileBuffer);
-    } catch (e) {}
-  }
-
-  return res.status(404).json({ success: false, error: "File not found in storage or temp cache." });
 });
 
 async function startServer() {

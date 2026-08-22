@@ -151,6 +151,25 @@ export function UserDashboard({ userSession, onSignOut }: UserDashboardProps) {
         return;
       }
       
+      const contentType = response.headers.get("content-type");
+      if (contentType && contentType.includes("application/json")) {
+        const json = await response.json();
+        if (json.publicUrl || json.downloadUrl) {
+          const directUrl = json.publicUrl || json.downloadUrl;
+          const a = document.createElement('a');
+          a.href = directUrl;
+          a.download = filename;
+          a.target = '_blank';
+          document.body.appendChild(a);
+          a.click();
+          document.body.removeChild(a);
+          return;
+        } else if (json.status === 'PROCESSING') {
+          alert("File validation is still in progress. Please wait a moment.");
+          return;
+        }
+      }
+
       const blob = await response.blob();
       const url = window.URL.createObjectURL(blob);
       const a = document.createElement('a');
@@ -173,37 +192,34 @@ export function UserDashboard({ userSession, onSignOut }: UserDashboardProps) {
     const interval = setInterval(async () => {
       attempts++;
       
-      // Attempt 1: Poll for generated .fvu file
       try {
-        const response = await fetch(`${BACKEND_URL}/api/v1/fvu/download?filename=${encodeURIComponent(fvuFileName)}`);
+        const response = await fetch(`${BACKEND_URL}/api/fvu/status?filename=${encodeURIComponent(fvuFileName)}`);
         if (response.ok) {
-          clearInterval(interval);
-          setValidationResult({
-            status: 'SUCCESS',
-            message: `Validated successfully by GitHub Actions Runner (Java 17)! File ready: ${fvuFileName}`,
-            fvuFileName: fvuFileName,
-            downloadUrl: `${BACKEND_URL}/api/v1/fvu/download?filename=${encodeURIComponent(fvuFileName)}`
-          });
-          setValidating(false);
-          fetchLogs();
-          return;
-        }
-      } catch (e) {}
-
-      // Attempt 2: Poll for generated .err file
-      try {
-        const response = await fetch(`${BACKEND_URL}/api/v1/fvu/download?filename=${encodeURIComponent(errorFileName)}`);
-        if (response.ok) {
-          clearInterval(interval);
-          setValidationResult({
-            status: 'FAILED',
-            message: `Validation complete with errors on GitHub Actions Runner. Error report ready: ${errorFileName}`,
-            errorFileName: errorFileName,
-            downloadUrl: `${BACKEND_URL}/api/v1/fvu/download?filename=${encodeURIComponent(errorFileName)}`
-          });
-          setValidating(false);
-          fetchLogs();
-          return;
+          const data = await response.json();
+          if (data.status === 'COMPLETED' || data.status === 'SUCCESS') {
+            clearInterval(interval);
+            setValidationResult({
+              status: 'SUCCESS',
+              message: `Validated successfully by GitHub Actions Runner (Java 17)! File ready: ${data.filename || fvuFileName}`,
+              fvuFileName: data.filename || fvuFileName,
+              downloadUrl: data.publicUrl || `${BACKEND_URL}/api/v1/fvu/download?filename=${encodeURIComponent(data.filename || fvuFileName)}`
+            });
+            setValidating(false);
+            fetchLogs();
+            return;
+          } else if (data.status === 'FAILED') {
+            clearInterval(interval);
+            setValidationResult({
+              status: 'FAILED',
+              message: `Validation complete with errors on GitHub Actions Runner. Error report ready: ${data.filename || errorFileName}`,
+              errorFileName: data.filename || errorFileName,
+              downloadUrl: data.publicUrl || `${BACKEND_URL}/api/v1/fvu/download?filename=${encodeURIComponent(data.filename || errorFileName)}`
+            });
+            setValidating(false);
+            fetchLogs();
+            return;
+          }
+          // If status is 'PROCESSING', continue polling
         }
       } catch (e) {}
 
