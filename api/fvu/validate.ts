@@ -1,4 +1,6 @@
 import { pool } from '../_lib/db.js';
+import { executeFVU } from '../../src/lib/fvuEngine.js';
+import { uploadToSupabase } from '../../src/lib/storage.js';
 
 export default async function handler(req: any, res: any) {
   // CORS Headers
@@ -9,7 +11,6 @@ export default async function handler(req: any, res: any) {
   if (req.method === "OPTIONS") {
     return res.status(200).end();
   }
-
   if (req.method !== "POST") {
     return res.status(405).json({ status: "FAILED", error: "Method not allowed. Use POST." });
   }
@@ -17,9 +18,7 @@ export default async function handler(req: any, res: any) {
   try {
     let body = req.body;
     if (typeof body === 'string') {
-      try {
-        body = JSON.parse(body);
-      } catch (e) {}
+      try { body = JSON.parse(body); } catch (e) {}
     }
 
     const {
@@ -30,81 +29,49 @@ export default async function handler(req: any, res: any) {
       csiFileContent = null
     } = body || {};
 
+    if (!fileContent) {
+      return res.status(400).json({ status: "FAILED", errors: [{ line: 1, code: "ERR_EMPTY", message: "File content is required." }] });
+    }
+
     const startTime = Date.now();
-    const javaValidatorUrl = process.env.JAVA_VALIDATOR_URL || process.env.FVU_ENGINE_URL;
 
-    let validationResult: any = null;
+    // Directly execute local Java Engine
+    const result = await executeFVU(fileContent, fileName, csiFileContent, csiFileName);
 
-    // 1. If remote Java Engine (Docker/Render/Cloud Run) is configured, forward the request
-    if (javaValidatorUrl) {
-      try {
-        const remoteRes = await fetch(`${javaValidatorUrl.replace(/\/$/, '')}/validate`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            fileName,
-            fileContent,
-            csiFileName,
-            csiFileContent,
-            email
-          })
-        });
-        if (remoteRes.ok) {
-          validationResult = await remoteRes.json();
-        }
-      } catch (remoteErr) {
-        console.warn("Remote Java Validator unreachable, switching to internal parser:", remoteErr);
+    let recordedOutputFile = result.success ? result.fvuFileName : result.errorFileName;
+    const isSuccess = result.success;
+
+    // Upload true file contents to Supabase Storage
+    let storageUrl: string | null = null;
+    try {
+      if (isSuccess && result.fvuFileContent && result.fvuFileName) {
+        storageUrl = await uploadToSupabase(result.fvuFileName, result.fvuFileContent);
+        console.log(`[Validation] Uploaded successful FVU file ${result.fvuFileName} to Supabase: ${storageUrl || 'Skipped'}`);
+      } else if (!isSuccess && result.errorContent && result.errorFileName) {
+        storageUrl = await uploadToSupabase(result.errorFileName, result.errorContent);
+        console.log(`[Validation] Uploaded error log ${result.errorFileName} to Supabase: ${storageUrl || 'Skipped'}`);
       }
+    } catch (uploadErr) {
+      console.error("[Validation] Supabase upload failed:", uploadErr);
     }
 
-    // 2. Built-in Standalone Parser Engine fallback (when running on Vercel without direct Java JRE)
-    if (!validationResult) {
-      const lines = (fileContent || "").split(/\r?\n/).filter(Boolean);
-      const errors: any[] = [];
+    const processingTimeMs = Date.now() - startTime;
 
-      if (lines.length === 0) {
-        errors.push({ line: 1, code: "ERR_EMPTY", message: "File is completely empty. Valid TDS return statement required." });
-      } else {
-        const header = lines[0];
-        const parts = header.split("^");
-        if (parts.length < 5 && !header.includes("^")) {
-          errors.push({ line: 1, code: "T-FV-1001", message: "Invalid file delimiter format. Caret (^) delimiter expected." });
-        }
-        if (header.toUpperCase().includes("INVALID") || header.toUpperCase().includes("ERROR")) {
-          errors.push({ line: 1, code: "T-FV-2041", message: "TAN or PAN syntax failed checksum algorithm validation." });
-        }
-      }
+    const validationResult = {
+      status: isSuccess ? "SUCCESS" : "FAILED",
+      fvuVersion: result.fvuVersionUsed || "1.1",
+      errorCount: result.errors?.length || 0,
+      errors: result.errors || [],
+      fvuFileName: isSuccess ? result.fvuFileName : null,
+      errorFileName: !isSuccess ? result.errorFileName : null,
+      downloadUrl: storageUrl || (recordedOutputFile ? `/api/v1/fvu/download?filename=${recordedOutputFile}` : null),
+      processingTimeMs,
+      message: isSuccess 
+        ? "Validated successfully by Local Java Engine." 
+        : "FVU Validation failed. Please review the NSDL error report."
+    };
 
-      const isSuccess = errors.length === 0;
-      const baseName = fileName.replace(/\.[^/.]+$/, "");
-      const fvuFileName = isSuccess ? `${baseName}.fvu` : null;
-      const errorFileName = !isSuccess ? `${baseName}_err.html` : null;
-      const processingTimeMs = Date.now() - startTime + 12;
-
-      validationResult = {
-        status: isSuccess ? "SUCCESS" : "FAILED",
-        fvuVersion: "1.1",
-        errorCount: errors.length,
-        errors: isSuccess ? [] : errors,
-        fvuFileName,
-        errorFileName,
-        processingTimeMs,
-        message: isSuccess
-          ? "Validated successfully by NSDL Java Standalone Engine and logged to central database."
-          : "NSDL Java FVU Validation failed. Please check error report."
-      };
-    }
-
-    const isSuccess = validationResult.status === "SUCCESS";
-    const recordedOutputFile = isSuccess ? validationResult.fvuFileName : validationResult.errorFileName;
-
-    // 3. Optional: Upload to Supabase Bucket (if result came from local fallback, there is no real file, but we can upload a synthetic one if needed, or if it came from remote, it might have contents attached)
-    // Note: The remote engine might have already uploaded it, but we can do it here if fvuFileContent is provided
-    if (validationResult.fvuFileContent && validationResult.fvuFileName) {
-      // In serverless, we might need to dynamically import or just let it pass
-    }
-
-    // 4. Database persistence with graceful try-catch
+    // Database persistence
     try {
       if (pool) {
         const connection = await pool.getConnection();
@@ -122,10 +89,8 @@ export default async function handler(req: any, res: any) {
               error_details TEXT NULL
             )
           `);
-
           const [users]: any = await connection.query("SELECT id FROM users WHERE email = ?", [email]);
           const userId = (users && users.length > 0) ? users[0].id : null;
-
           await connection.query(
             "INSERT INTO fvu_logs (user_id, filename, csi_filename, output_filename, status, error_details) VALUES (?, ?, ?, ?, ?, ?)",
             [
@@ -150,6 +115,7 @@ export default async function handler(req: any, res: any) {
     }
 
     return res.status(200).json(validationResult);
+
   } catch (err: any) {
     const errorMsg = typeof err === 'string' ? err : (err?.message || 'Validation engine processing error');
     console.error("Validation handler error:", errorMsg);

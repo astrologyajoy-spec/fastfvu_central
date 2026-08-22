@@ -1,6 +1,7 @@
 import { execFile } from 'child_process';
 import fs from 'fs/promises';
 import path from 'path';
+import os from 'os';
 import crypto from 'crypto';
 
 export interface HeaderDetails {
@@ -113,9 +114,6 @@ export function parseTdsHeader(fileContent: string): HeaderDetails {
  * based on the parsed Header Details.
  */
 export function resolveJarRoute(header: HeaderDetails, availableJars: string[] = []): JarRouteConfig {
-  const rpu = (header.rpuSoftware || '').toLowerCase();
-  const fileType = (header.fileType || '').toLowerCase();
-  
   let targetJar = 'TDS_TCS_FVU.jar';
   let fvuVersionArg = '8.9';
   let htmlFlag = '0';
@@ -125,8 +123,28 @@ export function resolveJarRoute(header: HeaderDetails, availableJars: string[] =
     fvuVersionArg = header.rpuVersion;
   }
 
-  const jarPath = path.resolve(process.cwd(), 'fvu-tool', targetJar);
+  // Look for target jar in availableJars or check common directories
+  if (availableJars.length > 0) {
+    const jarMatch = availableJars.find(j => j.endsWith('.jar'));
+    if (jarMatch) {
+      targetJar = path.basename(jarMatch);
+    }
+  }
+
+  // Resolve absolute path to jar
+  let jarPath = path.resolve(process.cwd(), 'fvu-tool', targetJar);
   
+  // Try finding jar in bin or root if fvu-tool jar doesn't exist
+  if (availableJars.length > 0) {
+    for (const jarCandidate of availableJars) {
+      if (jarCandidate.endsWith('.jar')) {
+        jarPath = jarCandidate.startsWith('/') ? jarCandidate : path.resolve(process.cwd(), jarCandidate);
+        targetJar = path.basename(jarCandidate);
+        break;
+      }
+    }
+  }
+
   // CLI Command Generator: java -Dfile.encoding=UTF-8 -jar <JAR> <TXT> <ERR> <FVU> <CONSOLIDATED> <CSI> <HTML> <VERSION>
   const cliCommandSample = `java -Dfile.encoding=UTF-8 -jar "${jarPath}" "<INPUT_TXT_PATH>" "<OUTPUT_ERR_PATH>" "<OUTPUT_FVU_PATH>" ${consolidatedFlag} "<CSI_FILE_PATH_OR_0>" ${htmlFlag} "${fvuVersionArg}"`;
 
@@ -198,7 +216,8 @@ export async function executeFVU(
 ): Promise<FVUResult> {
   const startTime = Date.now();
   const sessionId = crypto.randomBytes(8).toString('hex');
-  const tempDir = path.resolve(process.cwd(), 'temp', sessionId);
+  // Use OS temp directory (e.g. /tmp) for Serverless/Cloud compatibility
+  const tempDir = path.resolve(os.tmpdir(), 'fastfvu', sessionId);
   
   await fs.mkdir(tempDir, { recursive: true });
 
@@ -206,13 +225,23 @@ export async function executeFVU(
     // 1. Inspect and Parse Header Details from TXT File
     const headerDetails = parseTdsHeader(fileContent);
 
-    // Discover available JARs in fvu-tool/
+    // Discover available JARs across fvu-tool/, bin/, and root
     let availableJars: string[] = [];
-    try {
-      const binFiles = await fs.readdir(path.resolve(process.cwd(), 'fvu-tool'));
-      availableJars = binFiles.filter(f => f.endsWith('.jar'));
-    } catch (e) {
-      availableJars = ['TDS_TCS_FVU.jar'];
+    const searchDirs = [
+      path.resolve(process.cwd(), 'fvu-tool'),
+      path.resolve(process.cwd(), 'bin'),
+      process.cwd()
+    ];
+
+    for (const dir of searchDirs) {
+      try {
+        const files = await fs.readdir(dir);
+        for (const f of files) {
+          if (f.endsWith('.jar')) {
+            availableJars.push(path.join(dir, f));
+          }
+        }
+      } catch (e) {}
     }
 
     // 2. Resolve Dynamic JAR Route & CLI Arguments
@@ -257,10 +286,34 @@ export async function executeFVU(
     let stderrOutput = '';
     let javaExecError: Error | null = null;
 
-    const fvuToolDir = path.resolve(process.cwd(), 'fvu-tool');
+    // Determine java binary path
+    const candidateJavaPaths = [
+      process.env.JAVA_BIN,
+      process.env.JAVA_HOME ? path.join(process.env.JAVA_HOME, 'bin', 'java') : undefined,
+      path.resolve(process.cwd(), 'bin', 'java'),
+      path.resolve(process.cwd(), 'jre', 'bin', 'java'),
+      '/usr/bin/java',
+      '/usr/local/bin/java',
+      'java'
+    ].filter(Boolean) as string[];
+
+    let selectedJava = 'java';
+    for (const jPath of candidateJavaPaths) {
+      if (jPath === 'java') {
+        selectedJava = 'java';
+        break;
+      }
+      try {
+        await fs.access(jPath);
+        selectedJava = jPath;
+        break;
+      } catch {}
+    }
+
+    const workingDir = tempDir;
 
     await new Promise<void>((resolve) => {
-      execFile('java', jvmArgs, { cwd: fvuToolDir, encoding: 'utf-8', maxBuffer: 10 * 1024 * 1024 }, (err, stdout, stderr) => {
+      execFile(selectedJava, jvmArgs, { cwd: workingDir, encoding: 'utf-8', maxBuffer: 10 * 1024 * 1024 }, (err, stdout, stderr) => {
         if (err) {
           javaExecError = err;
           console.warn("NSDL Java process warning/exit:", err.message);
@@ -271,7 +324,7 @@ export async function executeFVU(
       });
     });
 
-    // Check if output FVU exists anywhere in the temp directory (NSDL might change names)
+    // Check if output FVU exists anywhere in the temp directory
     let fvuExists = false;
     let fvuFileContent: Buffer | undefined = undefined;
     let finalFvuName = path.basename(fvuFilePath);
@@ -324,9 +377,9 @@ export async function executeFVU(
       } else if (javaExecError) {
         const isJavaMissing = (javaExecError as any).code === 'ENOENT' || javaExecError.message.includes('not found');
         if (isJavaMissing) {
-          const msg = "Java Runtime Environment (JRE) is not available in current container PATH. Ensure Java 8/11/17 is installed to execute NSDL Standalone JAR.";
+          const msg = "Java Runtime Environment (JRE) is not available in current execution environment. Ensure Java runtime is accessible.";
           parsedErrors = [{ line: 1, code: 'JRE_NOT_FOUND', message: msg }];
-          errContent = `NSDL Standalone Engine Error:\n------------------------------------\n${msg}\nCommand: java ${jvmArgs.join(' ')}`;
+          errContent = `NSDL Engine Error:\n------------------------------------\n${msg}\nCommand: ${selectedJava} ${jvmArgs.join(' ')}`;
         } else {
           parsedErrors = [{ line: 1, code: 'JAVA_EXEC_ERR', message: javaExecError.message }];
           errContent = `Java Execution Error:\n${javaExecError.message}\n${stdoutOutput}\n${stderrOutput}`;

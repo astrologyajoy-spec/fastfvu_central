@@ -1,3 +1,7 @@
+import fs from 'fs/promises';
+import path from 'path';
+import os from 'os';
+
 export default async function handler(req: any, res: any) {
   // CORS Headers
   res.setHeader("Access-Control-Allow-Origin", "*");
@@ -8,41 +12,64 @@ export default async function handler(req: any, res: any) {
     return res.status(200).end();
   }
 
-  const { filename } = req.query;
+  // Use WHATWG URL API to parse safely
+  const url = new URL(req.url || '/', `http://${req.headers.host || 'localhost'}`);
+  const filename = url.searchParams.get('filename') || req.query?.filename;
+
   if (!filename || typeof filename !== 'string') {
     return res.status(400).json({ error: "Filename is required" });
   }
 
   const supabaseUrl = process.env.SUPABASE_URL;
-  const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_ANON_KEY;
   const bucketName = process.env.SUPABASE_BUCKET_NAME || 'fvu-logs';
 
   try {
-    if (supabaseUrl && supabaseKey) {
-      // Fetch the file from Supabase Storage
-      const response = await fetch(`${supabaseUrl}/storage/v1/object/${bucketName}/${filename}`, {
-        headers: {
-          'Authorization': `Bearer ${supabaseKey}`
-        }
-      });
+    if (supabaseUrl) {
+      // Fetch the file directly from Supabase Public Storage
+      const publicUrl = `${supabaseUrl}/storage/v1/object/public/${bucketName}/${filename}`;
+      const response = await fetch(publicUrl);
 
       if (response.ok) {
         const arrayBuffer = await response.arrayBuffer();
         const fileBuffer = Buffer.from(arrayBuffer);
         
-        // Set headers to force download as an attachment
         res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
         res.setHeader("Content-Type", "application/octet-stream");
         return res.status(200).send(fileBuffer);
       } else {
-        console.warn(`Supabase fetch failed for ${filename}:`, response.status);
-        return res.status(404).json({ error: "File not found in storage." });
+        // Fallback to authenticated fetch in case bucket is private
+        const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_ANON_KEY;
+        if (supabaseKey) {
+          const authResponse = await fetch(`${supabaseUrl}/storage/v1/object/authenticated/${bucketName}/${filename}`, {
+            headers: { 'Authorization': `Bearer ${supabaseKey}` }
+          });
+          if (authResponse.ok) {
+            const arrayBuffer = await authResponse.arrayBuffer();
+            const fileBuffer = Buffer.from(arrayBuffer);
+            res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
+            res.setHeader("Content-Type", "application/octet-stream");
+            return res.status(200).send(fileBuffer);
+          }
+        }
       }
-    } else {
-      return res.status(500).json({ error: "Storage not configured." });
     }
-  } catch (error) {
-    console.error("Download error:", error);
+
+    // Fallback: Check local temporary directory (for local dev / serverless session execution)
+    const parts = filename.split('_');
+    const sessionId = parts.length >= 2 ? parts[1].split('.')[0] : 'default';
+    const tempDir = path.resolve(os.tmpdir(), 'fastfvu', sessionId);
+    const localFilePath = path.join(tempDir, filename);
+
+    try {
+      const fileBuffer = await fs.readFile(localFilePath);
+      res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
+      res.setHeader("Content-Type", "application/octet-stream");
+      return res.status(200).send(fileBuffer);
+    } catch (localErr) {}
+
+    return res.status(404).json({ error: "File not found in storage or temp cache." });
+  } catch (error: any) {
+    console.error("Download error:", error?.message || error);
     return res.status(500).json({ error: "Failed to download file" });
   }
 }
