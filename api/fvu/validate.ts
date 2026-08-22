@@ -35,8 +35,50 @@ export default async function handler(req: any, res: any) {
 
     const startTime = Date.now();
 
-    // Directly execute local Java Engine
+    // Attempt local Java execution first
     const result = await executeFVU(fileContent, fileName, csiFileContent, csiFileName);
+
+    // If local execution failed due to missing JRE or if GITHUB_PAT is set, trigger GitHub Actions workflow
+    const githubPat = process.env.GITHUB_PAT || process.env.GITHUB_TOKEN;
+    const githubRepo = process.env.GITHUB_REPO || process.env.GITHUB_REPOSITORY; // e.g. "owner/repo"
+
+    let dispatchedToGithub = false;
+    if ((!result.success && result.errors?.some(e => e.code === 'JRE_NOT_FOUND')) || (githubPat && githubRepo)) {
+      if (githubPat && githubRepo) {
+        try {
+          const dispatchRes = await fetch(`https://api.github.com/repos/${githubRepo}/dispatches`, {
+            method: "POST",
+            headers: {
+              "Accept": "application/vnd.github.v3+json",
+              "Authorization": `Bearer ${githubPat}`,
+              "Content-Type": "application/json",
+              "User-Agent": "FastFVU-Central-App"
+            },
+            body: JSON.stringify({
+              event_type: "fvu_validate",
+              client_payload: {
+                fileName,
+                fileContent,
+                csiFileName,
+                csiFileContent,
+                email,
+                jobId: startTime.toString()
+              }
+            })
+          });
+
+          if (dispatchRes.ok || dispatchRes.status === 204) {
+            dispatchedToGithub = true;
+            console.log(`[Validation] Successfully dispatched FVU validation to GitHub Actions (${githubRepo}).`);
+          } else {
+            const errText = await dispatchRes.text();
+            console.warn(`[Validation] GitHub Dispatch returned status ${dispatchRes.status}:`, errText);
+          }
+        } catch (ghErr) {
+          console.error("[Validation] Failed dispatching to GitHub Actions:", ghErr);
+        }
+      }
+    }
 
     let recordedOutputFile = result.success ? result.fvuFileName : result.errorFileName;
     const isSuccess = result.success;
@@ -88,10 +130,13 @@ export default async function handler(req: any, res: any) {
       downloadUrl: storageUrl || dataUriFallback || (recordedOutputFile ? `/api/v1/fvu/download?filename=${recordedOutputFile}` : null),
       fileContentBase64,
       errorContent: !isSuccess ? rawTextContent : null,
+      dispatchedToGithub,
       processingTimeMs,
       message: isSuccess 
         ? "Validated successfully by Local Java Engine." 
-        : "FVU Validation failed. Please review the NSDL error report."
+        : (dispatchedToGithub 
+            ? "FVU validation job triggered on GitHub Actions runner. Result will be uploaded to Supabase Storage."
+            : "FVU Validation failed. Please review the NSDL error report.")
     };
 
     // Database persistence

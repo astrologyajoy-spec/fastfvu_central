@@ -1,0 +1,125 @@
+name: FVU Validation Runner
+
+on:
+  repository_dispatch:
+    types: [fvu_validate]
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Run FVU Validation & Upload to Supabase
+        env:
+          FILE_NAME: ${{ github.event.client_payload.fileName }}
+          FILE_CONTENT: ${{ github.event.client_payload.fileContent }}
+          CSI_FILE_NAME: ${{ github.event.client_payload.csiFileName }}
+          CSI_FILE_CONTENT: ${{ github.event.client_payload.csiFileContent }}
+          JOB_ID: ${{ github.event.client_payload.jobId }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+          SUPABASE_BUCKET_NAME: ${{ secrets.SUPABASE_BUCKET_NAME || 'fvu-logs' }}
+        run: |
+          node -e '
+            const fs = require("fs");
+            const path = require("path");
+            const { execSync } = require("child_process");
+
+            async function run() {
+              const workDir = path.join(process.cwd(), "tmp_job");
+              fs.mkdirSync(workDir, { recursive: true });
+
+              const fileName = process.env.FILE_NAME || "statement.txt";
+              const inputPath = path.join(workDir, fileName);
+              fs.writeFileSync(inputPath, process.env.FILE_CONTENT || "", "utf-8");
+
+              let csiPath = "0";
+              if (process.env.CSI_FILE_CONTENT && process.env.CSI_FILE_NAME) {
+                csiPath = path.join(workDir, process.env.CSI_FILE_NAME);
+                fs.writeFileSync(csiPath, process.env.CSI_FILE_CONTENT, "utf-8");
+              }
+
+              const errFileName = fileName.replace(/\.[^/.]+$/, "") + ".err";
+              const fvuFileName = fileName.replace(/\.[^/.]+$/, "") + ".fvu";
+              const errPath = path.join(workDir, errFileName);
+              const fvuPath = path.join(workDir, fvuFileName);
+
+              let jarPath = path.join(process.cwd(), "bin", "1TDS_STANDALONE_FVU_1.1.jar");
+              if (!fs.existsSync(jarPath)) {
+                jarPath = path.join(process.cwd(), "fvu-tool", "TDS_TCS_FVU.jar");
+              }
+
+              console.log(`Executing JAR: ${jarPath}`);
+              const cmd = `java -Dfile.encoding=UTF-8 -jar "${jarPath}" "${inputPath}" "${errPath}" "${fvuPath}" 0 "${csiPath}" 0 8.9`;
+              
+              try {
+                execSync(cmd, { cwd: workDir, stdio: "inherit" });
+              } catch (e) {
+                console.log("Java execution finished.");
+              }
+
+              let targetFile = null;
+              let targetName = null;
+              if (fs.existsSync(fvuPath) && fs.statSync(fvuPath).size > 0) {
+                targetFile = fvuPath;
+                targetName = fvuFileName;
+              } else if (fs.existsSync(errPath)) {
+                targetFile = errPath;
+                targetName = errFileName;
+              } else {
+                const files = fs.readdirSync(workDir);
+                const found = files.find(f => f.endsWith(".fvu") || f.endsWith(".err"));
+                if (found) {
+                  targetFile = path.join(workDir, found);
+                  targetName = found;
+                }
+              }
+
+              if (!targetFile) {
+                console.error("No output file generated.");
+                process.exit(1);
+              }
+
+              console.log(`Generated output file: ${targetName}`);
+
+              const supabaseUrl = process.env.SUPABASE_URL;
+              const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_ANON_KEY;
+              const bucketName = process.env.SUPABASE_BUCKET_NAME || "fvu-logs";
+
+              if (supabaseUrl && supabaseKey) {
+                const fileBuffer = fs.readFileSync(targetFile);
+                const uploadUrl = `${supabaseUrl}/storage/v1/object/${bucketName}/${targetName}`;
+                const res = await fetch(uploadUrl, {
+                  method: "POST",
+                  headers: {
+                    "Authorization": `Bearer ${supabaseKey}`,
+                    "Content-Type": "application/octet-stream",
+                    "x-upsert": "true"
+                  },
+                  body: fileBuffer
+                });
+                console.log(`Uploaded to Supabase with status ${res.status}`);
+              } else {
+                console.warn("Supabase credentials not available in environment.");
+              }
+            }
+
+            run().catch(err => {
+              console.error("Runner error:", err);
+              process.exit(1);
+            });
+          '
