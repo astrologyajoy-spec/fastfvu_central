@@ -1,4 +1,5 @@
-import { executeFVU } from "./src/lib/fvuEngine";
+import { executeFVU } from "./src/lib/fvuEngine.js";
+import { uploadToSupabase } from "./src/lib/storage.js";
 import express from "express";
 import path from "path";
 import dotenv from "dotenv";
@@ -264,6 +265,13 @@ app.post("/api/fvu/validate", async (req, res) => {
     // Call the Java execution engine
     const fvuResult = await executeFVU(fileContent, fileName, csiFileContent || undefined, csiFileName || undefined);
     const recordedOutputFile = fvuResult.success ? fvuResult.fvuFileName : fvuResult.errorFileName;
+
+    // Upload logs/outputs to Supabase Storage Bucket
+    if (fvuResult.success && fvuResult.fvuFileName && fvuResult.fvuFileContent) {
+      await uploadToSupabase(fvuResult.fvuFileName, fvuResult.fvuFileContent);
+    } else if (!fvuResult.success && fvuResult.errorFileName && fvuResult.errorContent) {
+      await uploadToSupabase(fvuResult.errorFileName, fvuResult.errorContent);
+    }
 
     const connection = await pool.getConnection();
     try {

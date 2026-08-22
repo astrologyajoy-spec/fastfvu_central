@@ -37,3 +37,4 @@ export function getDbPool(): mysql.Pool | null {
 }
 
 export const pool = getDbPool();
+export default pool;

@@ -29,6 +29,7 @@ export interface FVUResult {
   success: boolean;
   fvuFilePath?: string;
   fvuFileName?: string;
+  fvuFileContent?: string;
   errorFilePath?: string;
   errorFileName?: string;
   errorContent?: string;
@@ -115,36 +116,16 @@ export function resolveJarRoute(header: HeaderDetails, availableJars: string[] =
   const rpu = (header.rpuSoftware || '').toLowerCase();
   const fileType = (header.fileType || '').toLowerCase();
   
-  let targetJar = '1TDS_STANDALONE_FVU_1.1.jar';
-  let fvuVersionArg = '1.1';
+  let targetJar = 'TDS_TCS_FVU.jar';
+  let fvuVersionArg = '8.9';
   let htmlFlag = '0';
   let consolidatedFlag = '0';
 
-  // Rule 1: Central Govt / Institutional 1TDS Standalone RPU
-  if (fileType.includes('sl') || rpu.includes('1tds') || rpu.includes('standalone') || rpu.includes('central')) {
-    targetJar = '1TDS_STANDALONE_FVU_1.1.jar';
-    fvuVersionArg = '1.1';
-  }
-  // Rule 2: Protean RPU / Standard e-TDS NSDL Returns (Forms 24Q, 26Q, 27Q, 27EQ)
-  else if (rpu.includes('protean') || rpu.includes('rpu') || fileType.includes('ns')) {
-    // If specific versioned standard JAR exists in ./bin, prefer it (e.g. TDS_STANDALONE_FVU_1.1.jar or eTDS_FVU.jar)
-    if (availableJars.includes('TDS_STANDALONE_FVU_1.1.jar')) {
-      targetJar = 'TDS_STANDALONE_FVU_1.1.jar';
-    } else if (availableJars.includes('eTDS_FVU.jar')) {
-      targetJar = 'eTDS_FVU.jar';
-    } else {
-      targetJar = '1TDS_STANDALONE_FVU_1.1.jar';
-    }
-
-    // Match Version Argument with the extracted RPU Header version
-    if (header.rpuVersion) {
-      fvuVersionArg = header.rpuVersion; // e.g. "1.1" or "8.9"
-    } else {
-      fvuVersionArg = '1.1';
-    }
+  if (header.rpuVersion) {
+    fvuVersionArg = header.rpuVersion;
   }
 
-  const jarPath = path.resolve(process.cwd(), 'bin', targetJar);
+  const jarPath = path.resolve(process.cwd(), 'fvu-tool', targetJar);
   
   // CLI Command Generator: java -Dfile.encoding=UTF-8 -jar <JAR> <TXT> <ERR> <FVU> <CONSOLIDATED> <CSI> <HTML> <VERSION>
   const cliCommandSample = `java -Dfile.encoding=UTF-8 -jar "${jarPath}" "<INPUT_TXT_PATH>" "<OUTPUT_ERR_PATH>" "<OUTPUT_FVU_PATH>" ${consolidatedFlag} "<CSI_FILE_PATH_OR_0>" ${htmlFlag} "${fvuVersionArg}"`;
@@ -224,13 +205,13 @@ export async function executeFVU(
   // 1. Inspect and Parse Header Details from TXT File
   const headerDetails = parseTdsHeader(fileContent);
 
-  // Discover available JARs in bin/
+  // Discover available JARs in fvu-tool/
   let availableJars: string[] = [];
   try {
-    const binFiles = await fs.readdir(path.resolve(process.cwd(), 'bin'));
+    const binFiles = await fs.readdir(path.resolve(process.cwd(), 'fvu-tool'));
     availableJars = binFiles.filter(f => f.endsWith('.jar'));
   } catch (e) {
-    availableJars = ['1TDS_STANDALONE_FVU_1.1.jar'];
+    availableJars = ['TDS_TCS_FVU.jar'];
   }
 
   // 2. Resolve Dynamic JAR Route & CLI Arguments
@@ -275,8 +256,10 @@ export async function executeFVU(
   let stderrOutput = '';
   let javaExecError: Error | null = null;
 
+  const fvuToolDir = path.resolve(process.cwd(), 'fvu-tool');
+
   await new Promise<void>((resolve) => {
-    execFile('java', jvmArgs, { cwd: tempDir, encoding: 'utf-8', maxBuffer: 10 * 1024 * 1024 }, (err, stdout, stderr) => {
+    execFile('java', jvmArgs, { cwd: fvuToolDir, encoding: 'utf-8', maxBuffer: 10 * 1024 * 1024 }, (err, stdout, stderr) => {
       if (err) {
         javaExecError = err;
         console.warn("NSDL Java process warning/exit:", err.message);
@@ -289,10 +272,12 @@ export async function executeFVU(
 
   // Check if output FVU exists
   let fvuExists = false;
+  let fvuFileContent = '';
   try {
     const stat = await fs.stat(fvuFilePath);
     if (stat.size > 0) {
       fvuExists = true;
+      fvuFileContent = await fs.readFile(fvuFilePath, 'utf-8');
     }
   } catch {
     fvuExists = false;
@@ -371,6 +356,7 @@ export async function executeFVU(
     success: true,
     fvuFilePath,
     fvuFileName: path.basename(fvuFilePath),
+    fvuFileContent,
     headerDetails,
     selectedJar: route.jarName,
     fvuVersionUsed: route.fvuVersionArg,

@@ -33,8 +33,8 @@ RUN npm ci --include=dev
 # Copy project source files
 COPY . .
 
-# Create directory for temp processing and ensure bin directory has jar permissions
-RUN mkdir -p /app/temp /app/bin && chmod -R 755 /app/bin /app/temp
+# Create directory for temp processing and ensure tools have permissions
+RUN mkdir -p /app/temp /app/bin /app/fvu-tool && chmod -R 755 /app/bin /app/temp /app/fvu-tool
 
 # Build the production assets and bundle the backend server with esbuild
 RUN npm run build

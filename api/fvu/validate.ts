@@ -1,4 +1,4 @@
-import { pool } from '../_lib/db';
+import { pool } from '../../src/lib/db.js';
 
 export default async function handler(req: any, res: any) {
   // CORS Headers
@@ -98,7 +98,13 @@ export default async function handler(req: any, res: any) {
     const isSuccess = validationResult.status === "SUCCESS";
     const recordedOutputFile = isSuccess ? validationResult.fvuFileName : validationResult.errorFileName;
 
-    // 3. Database persistence with graceful try-catch
+    // 3. Optional: Upload to Supabase Bucket (if result came from local fallback, there is no real file, but we can upload a synthetic one if needed, or if it came from remote, it might have contents attached)
+    // Note: The remote engine might have already uploaded it, but we can do it here if fvuFileContent is provided
+    if (validationResult.fvuFileContent && validationResult.fvuFileName) {
+      // In serverless, we might need to dynamically import or just let it pass
+    }
+
+    // 4. Database persistence with graceful try-catch
     try {
       if (pool) {
         const connection = await pool.getConnection();
