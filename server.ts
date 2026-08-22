@@ -2,6 +2,7 @@ import { executeFVU, generateNativeNodeFVU } from "./src/lib/fvuEngine";
 import { uploadToSupabase } from "./src/lib/storage";
 import express from "express";
 import path from "path";
+import os from "os";
 import dotenv from "dotenv";
 import { OAuth2Client } from "google-auth-library";
 import { pool } from "./src/lib/db";
@@ -74,6 +75,7 @@ async function initDB() {
       )
     `);
 
+    // Ensure csi_filename column exists if table was already created
     try {
       await connection.query("ALTER TABLE fvu_logs ADD COLUMN csi_filename VARCHAR(255) NULL");
     } catch (e: any) {
@@ -82,7 +84,7 @@ async function initDB() {
 
     connection.release();
     
-    // Seed dummy data for playground
+    // 4. Seed dummy data for playground
     const [dummyUser]: any = await connection.query("SELECT id FROM users WHERE email = 'developer@fastfvu.central'");
     let dummyUserId;
     if (!dummyUser || dummyUser.length === 0) {
@@ -101,6 +103,7 @@ async function initDB() {
   }
 }
 
+
 // API Routes
 app.get("/api/health", (req, res) => {
   res.json({ status: "ok", database: "TiDB Cloud Connected", timestamp: new Date() });
@@ -113,7 +116,9 @@ function decodeJwtPayload(token: string): any {
       const payloadStr = Buffer.from(parts[1], 'base64').toString('utf-8');
       return JSON.parse(payloadStr);
     }
-  } catch (e) {}
+  } catch (e) {
+    // Ignore decode error
+  }
   return null;
 }
 
@@ -128,6 +133,7 @@ app.post("/api/auth/google", async (req, res) => {
     let email = "";
     let name = "Google User";
 
+    // 1. Try official verification
     if (googleClient) {
       try {
         const ticket = await googleClient.verifyIdToken({
@@ -144,6 +150,7 @@ app.post("/api/auth/google", async (req, res) => {
       }
     }
 
+    // 2. Fallback: Parse decoded JWT payload if verifyIdToken failed
     if (!email) {
       const decoded = decodeJwtPayload(credential);
       if (decoded && decoded.email) {
@@ -158,6 +165,7 @@ app.post("/api/auth/google", async (req, res) => {
 
     let finalApiKey = 'fvu_live_' + Math.random().toString(36).substring(2, 12) + 'x';
 
+    // 3. Database persistence with graceful fallback
     try {
       if (pool) {
         const connection = await pool.getConnection();
@@ -210,6 +218,7 @@ app.post("/api/auth/register", async (req, res) => {
 
     const connection = await pool.getConnection();
     try {
+      // Insert user if not exists
       await connection.query(
         "INSERT INTO users (email, password) VALUES (?, ?) ON DUPLICATE KEY UPDATE email=email",
         [email, password]
@@ -218,6 +227,7 @@ app.post("/api/auth/register", async (req, res) => {
       const [users]: any = await connection.query("SELECT id FROM users WHERE email = ?", [email]);
       const userId = users[0].id;
 
+      // Check if API key already exists for this user (they might have registered twice)
       const [existingKeys]: any = await connection.query("SELECT api_key FROM api_keys WHERE user_id = ?", [userId]);
       let finalApiKey = apiKey;
       if (existingKeys && existingKeys.length > 0) {
@@ -235,6 +245,7 @@ app.post("/api/auth/register", async (req, res) => {
     }
   } catch (err: any) {
     console.error("Register error:", err);
+    // If api key collision or general error, generate another or return success with existing
     const fallbackKey = 'fvu_live_' + Math.random().toString(36).substring(2, 12) + 'x';
     res.json({ success: true, email: req.body.email, apiKey: fallbackKey });
   }
@@ -242,6 +253,7 @@ app.post("/api/auth/register", async (req, res) => {
 
 // Validate Statement & Log to TiDB Cloud
 app.post("/api/fvu/validate", async (req, res) => {
+  res.setHeader("Content-Type", "application/json");
   try {
     const { 
       email = "developer@fastfvu.central", 
@@ -249,7 +261,16 @@ app.post("/api/fvu/validate", async (req, res) => {
       fileContent = "",
       csiFileName = null,
       csiFileContent = null
-    } = req.body;
+    } = req.body || {};
+
+    if (!fileContent) {
+      return res.status(400).json({
+        success: false,
+        status: "FAILED",
+        error: "File content is required",
+        errors: [{ line: 1, code: "ERR_EMPTY", message: "File content is required." }]
+      });
+    }
 
     const startTime = Date.now();
     const safeBaseName = fileName.replace(/[^a-zA-Z0-9._-]/g, '_').replace(/\.[^/.]+$/, "");
@@ -261,6 +282,7 @@ app.post("/api/fvu/validate", async (req, res) => {
     const githubRepo = process.env.GITHUB_REPO || process.env.GITHUB_REPOSITORY || "astrologyajoy-spec/fastfvu_central";
 
     let dispatchedToGithub = false;
+    let githubDispatchError: string | null = null;
 
     if (githubPat) {
       try {
@@ -291,14 +313,20 @@ app.post("/api/fvu/validate", async (req, res) => {
         if (dispatchRes.ok || dispatchRes.status === 204) {
           dispatchedToGithub = true;
           console.log(`[Express Validation] Dispatched to GitHub Actions (${githubRepo}).`);
+        } else {
+          const errText = await dispatchRes.text();
+          githubDispatchError = `GitHub API HTTP ${dispatchRes.status}: ${errText}`;
+          console.warn(`[Express Validation] GitHub Dispatch error:`, githubDispatchError);
         }
-      } catch (ghErr) {
-        console.error("[Express Validation] GitHub Dispatch error:", ghErr);
+      } catch (ghErr: any) {
+        githubDispatchError = ghErr?.message || String(ghErr);
+        console.error("[Express Validation] GitHub Dispatch exception:", githubDispatchError);
       }
     }
 
     if (dispatchedToGithub) {
       return res.json({
+        success: true,
         status: "PENDING",
         pending: true,
         dispatchedToGithub: true,
@@ -311,7 +339,7 @@ app.post("/api/fvu/validate", async (req, res) => {
       });
     }
 
-    // Fallback: Use FastFVU Native JS Engine
+    // Fallback: Use FastFVU Native JS Engine (Zero Java calls)
     const headerDetails = {
       rpuSoftware: "FastFVU Central",
       fileType: "TDS/TCS",
@@ -351,41 +379,48 @@ app.post("/api/fvu/validate", async (req, res) => {
     const downloadUrl = storageUrl || dataUriFallback || (recordedOutputFile ? `/api/v1/fvu/download?filename=${recordedOutputFile}` : null);
 
     try {
-      const connection = await pool.getConnection();
-      try {
-        const [users]: any = await connection.query("SELECT id FROM users WHERE email = ?", [email]);
-        const userId = (users && users.length > 0) ? users[0].id : null;
+      if (pool) {
+        const connection = await pool.getConnection();
+        try {
+          const [users]: any = await connection.query("SELECT id FROM users WHERE email = ?", [email]);
+          const userId = (users && users.length > 0) ? users[0].id : null;
 
-        await connection.query(
-          "INSERT INTO fvu_logs (user_id, filename, csi_filename, output_filename, status, error_details) VALUES (?, ?, ?, ?, ?, ?)",
-          [
-            userId, 
-            fileName, 
-            csiFileName || null, 
-            recordedOutputFile || null, 
-            fvuResult.success ? "SUCCESS" : "FAILED", 
-            fvuResult.success ? null : JSON.stringify(fvuResult.errors)
-          ]
-        );
-      } finally {
-        connection.release();
+          await connection.query(
+            "INSERT INTO fvu_logs (user_id, filename, csi_filename, output_filename, status, error_details) VALUES (?, ?, ?, ?, ?, ?)",
+            [
+              userId, 
+              fileName, 
+              csiFileName || null, 
+              recordedOutputFile || null, 
+              fvuResult.success ? "SUCCESS" : "FAILED", 
+              fvuResult.success ? null : JSON.stringify(fvuResult.errors)
+            ]
+          );
+        } finally {
+          connection.release();
+        }
       }
-    } catch (e) {}
+    } catch (e) {
+      console.warn("[Express Validation] DB log skipped:", e);
+    }
 
     if (!fvuResult.success) {
       return res.status(400).json({
+        success: false,
         status: "FAILED",
         errors: fvuResult.errors,
         errorFileName: fvuResult.errorFileName,
         downloadUrl,
         fileContentBase64,
         errorContent: rawTextContent,
+        githubDispatchError: githubDispatchError || undefined,
         processingTimeMs: fvuResult.processingTimeMs,
         message: "FVU Validation failed. Please review the NSDL error report."
       });
     }
 
     res.json({
+      success: true,
       status: "SUCCESS",
       fvuVersion: "1.1",
       errorCount: 0,
@@ -397,12 +432,20 @@ app.post("/api/fvu/validate", async (req, res) => {
     });
   } catch (err: any) {
     console.error("Validation error:", err);
-    res.status(500).json({ error: "Validation engine error: " + err.message });
+    res.status(500).json({ 
+      success: false, 
+      error: err?.message || "Internal Server Error", 
+      stack: err?.stack 
+    });
   }
 });
 
 app.get("/api/fvu/logs", async (req, res) => {
+  res.setHeader("Content-Type", "application/json");
   try {
+    if (!pool) {
+      return res.json({ success: true, logs: [], message: "Database pool not initialized" });
+    }
     const connection = await pool.getConnection();
     let rows;
     try {
@@ -413,12 +456,18 @@ app.get("/api/fvu/logs", async (req, res) => {
     } finally {
       connection.release();
     }
-    res.json({ logs: rows });
-  } catch (err) {
+    res.json({ success: true, logs: rows || [] });
+  } catch (err: any) {
     console.error("Logs error:", err);
-    res.json({ logs: [] });
+    res.status(200).json({ 
+      success: false, 
+      logs: [], 
+      error: err?.message || "Failed to fetch logs",
+      stack: err?.stack 
+    });
   }
 });
+
 
 // External Developer API Endpoint
 app.post("/api/v1/fvu/generate", async (req, res) => {
@@ -447,6 +496,7 @@ app.post("/api/v1/fvu/generate", async (req, res) => {
       apiKeyId = keys[0].id;
       userId = keys[0].user_id;
 
+      // Process using Java Engine
       const fvuResult = await executeFVU(statementData, fileName, csiData, csiFileName);
       const recordedOutputFile = fvuResult.success ? fvuResult.fvuFileName : fvuResult.errorFileName;
 
@@ -491,6 +541,8 @@ app.post("/api/v1/fvu/generate", async (req, res) => {
   }
 });
 
+
+
 // Download FVU or Error file
 app.get("/api/v1/fvu/download", async (req, res) => {
   const filename = req.query.filename;
@@ -530,23 +582,27 @@ app.get("/api/v1/fvu/download", async (req, res) => {
     }
   }
 
+  // Fallback to os.tmpdir() and local temp directories
   const parts = filename.split('_');
   const sessionId = parts.length >= 2 ? parts[1].split('.')[0] : 'default';
-  const filePath = path.join(process.cwd(), 'temp', sessionId, filename);
-  
-  res.download(filePath, filename, {
-    headers: {
-      'Content-Type': 'application/octet-stream',
-      'Content-Disposition': `attachment; filename="${filename}"`
-    }
-  }, (err) => {
-    if (err) {
-      console.warn("File not found on disk:", err.message);
-      if (!res.headersSent) {
-        return res.status(404).json({ error: "File not found" });
-      }
-    }
-  });
+  const candidatePaths = [
+    path.resolve(os.tmpdir(), 'fastfvu', sessionId, filename),
+    path.resolve(os.tmpdir(), filename),
+    path.resolve(process.cwd(), 'temp', sessionId, filename),
+    path.resolve(process.cwd(), filename)
+  ];
+
+  for (const cPath of candidatePaths) {
+    try {
+      const fsModule = await import('fs/promises');
+      const fileBuffer = await fsModule.readFile(cPath);
+      res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
+      res.setHeader("Content-Type", "application/octet-stream");
+      return res.status(200).send(fileBuffer);
+    } catch (e) {}
+  }
+
+  return res.status(404).json({ success: false, error: "File not found in storage or temp cache." });
 });
 
 async function startServer() {

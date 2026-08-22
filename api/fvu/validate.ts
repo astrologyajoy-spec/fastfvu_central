@@ -3,7 +3,8 @@ import { generateNativeNodeFVU } from '../../src/lib/fvuEngine';
 import { uploadToSupabase } from '../../src/lib/storage';
 
 export default async function handler(req: any, res: any) {
-  // CORS Headers
+  // Always ensure JSON content type
+  res.setHeader("Content-Type", "application/json");
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization, Accept, x-api-key");
@@ -11,14 +12,23 @@ export default async function handler(req: any, res: any) {
   if (req.method === "OPTIONS") {
     return res.status(200).end();
   }
+
   if (req.method !== "POST") {
-    return res.status(405).json({ status: "FAILED", error: "Method not allowed. Use POST." });
+    return res.status(405).json({
+      success: false,
+      status: "FAILED",
+      error: "Method not allowed. Use POST."
+    });
   }
 
   try {
     let body = req.body;
     if (typeof body === 'string') {
-      try { body = JSON.parse(body); } catch (e) {}
+      try {
+        body = JSON.parse(body);
+      } catch (e) {
+        // Use raw body if not JSON parseable
+      }
     }
 
     const {
@@ -30,7 +40,12 @@ export default async function handler(req: any, res: any) {
     } = body || {};
 
     if (!fileContent) {
-      return res.status(400).json({ status: "FAILED", errors: [{ line: 1, code: "ERR_EMPTY", message: "File content is required." }] });
+      return res.status(400).json({
+        success: false,
+        status: "FAILED",
+        error: "File content is required",
+        errors: [{ line: 1, code: "ERR_EMPTY", message: "File content is required." }]
+      });
     }
 
     const startTime = Date.now();
@@ -44,8 +59,8 @@ export default async function handler(req: any, res: any) {
     const githubRepo = process.env.GITHUB_REPO || process.env.GITHUB_REPOSITORY || "astrologyajoy-spec/fastfvu_central";
 
     let dispatchedToGithub = false;
+    let githubDispatchError: string | null = null;
 
-    // Trigger GitHub Repository Dispatch Event (Bypassing Local Java on Vercel)
     if (githubPat) {
       try {
         const dispatchUrl = `https://api.github.com/repos/${githubRepo}/dispatches`;
@@ -77,15 +92,18 @@ export default async function handler(req: any, res: any) {
           console.log(`[Validation API] Successfully dispatched FVU job to GitHub Actions (${githubRepo}).`);
         } else {
           const errText = await dispatchRes.text();
-          console.warn(`[Validation API] GitHub Dispatch returned status ${dispatchRes.status}:`, errText);
+          githubDispatchError = `GitHub API HTTP ${dispatchRes.status}: ${errText}`;
+          console.warn(`[Validation API] GitHub Dispatch returned error:`, githubDispatchError);
         }
       } catch (ghErr: any) {
-        console.error("[Validation API] GitHub dispatch error:", ghErr?.message || ghErr);
+        githubDispatchError = ghErr?.message || String(ghErr);
+        console.error("[Validation API] GitHub dispatch error:", githubDispatchError);
       }
     }
 
     if (dispatchedToGithub) {
       const responseData = {
+        success: true,
         status: "PENDING",
         pending: true,
         dispatchedToGithub: true,
@@ -97,7 +115,7 @@ export default async function handler(req: any, res: any) {
         message: "Validation job dispatched to GitHub Actions runner (Java 17). Polling for output report..."
       };
 
-      // Record to DB
+      // Record DB log safely
       try {
         if (pool) {
           const connection = await pool.getConnection();
@@ -132,8 +150,8 @@ export default async function handler(req: any, res: any) {
       return res.status(200).json(responseData);
     }
 
-    // Fallback if GITHUB_PAT_TOKEN is not set: Run FastFVU Native JS Engine (Zero Java runtime dependency)
-    console.log("[Validation API] GITHUB_PAT_TOKEN not detected. Executing FastFVU Native Node Engine...");
+    // Fallback if GitHub dispatch is not triggered / not available
+    console.log("[Validation API] Executing FastFVU Native Node Engine...");
     const headerDetails = {
       rpuSoftware: "FastFVU Central",
       fileType: "TDS/TCS",
@@ -170,6 +188,7 @@ export default async function handler(req: any, res: any) {
     const dataUriFallback = fileContentBase64 ? `data:application/octet-stream;base64,${fileContentBase64}` : null;
 
     return res.status(isSuccess ? 200 : 400).json({
+      success: isSuccess,
       status: isSuccess ? "SUCCESS" : "FAILED",
       fvuVersion: "1.1",
       errorCount: result.errors?.length || 0,
@@ -180,6 +199,7 @@ export default async function handler(req: any, res: any) {
       fileContentBase64,
       errorContent: !isSuccess ? rawTextContent : null,
       dispatchedToGithub: false,
+      githubDispatchError: githubDispatchError || undefined,
       processingTimeMs: Date.now() - startTime,
       message: isSuccess 
         ? "Validated successfully by FastFVU NSDL Compliant Engine." 
@@ -187,8 +207,13 @@ export default async function handler(req: any, res: any) {
     });
 
   } catch (err: any) {
-    const errorMsg = typeof err === 'string' ? err : (err?.message || 'Validation processing error');
-    console.error("Validation error:", errorMsg);
-    return res.status(200).json({ status: "FAILED", errors: [{ line: 1, code: "ERR_EXEC", message: errorMsg }] });
+    console.error("Validation error:", err);
+    return res.status(500).json({
+      success: false,
+      status: "FAILED",
+      error: err?.message || "Internal Server Error",
+      stack: err?.stack,
+      errors: [{ line: 1, code: "ERR_EXEC", message: err?.message || "Internal Server Error" }]
+    });
   }
 }

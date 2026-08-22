@@ -1,6 +1,7 @@
 import { pool } from '../_lib/db';
 
 export default async function handler(req: any, res: any) {
+  res.setHeader("Content-Type", "application/json");
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "GET, OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization, Accept, x-api-key");
@@ -11,7 +12,7 @@ export default async function handler(req: any, res: any) {
 
   try {
     if (!pool) {
-      return res.status(200).json({ logs: [] });
+      return res.status(200).json({ success: true, logs: [], message: "Database pool not initialized" });
     }
     const connection = await pool.getConnection();
     try {
@@ -33,12 +34,17 @@ export default async function handler(req: any, res: any) {
         "SELECT id, filename as file_name, csi_filename, output_filename, status, processed_at as created_at, error_details FROM fvu_logs ORDER BY processed_at DESC LIMIT 50"
       );
 
-      return res.status(200).json({ logs: rows });
+      return res.status(200).json({ success: true, logs: rows || [] });
     } finally {
       connection.release();
     }
   } catch (err: any) {
     console.error("Fetch Logs Error:", err);
-    return res.status(200).json({ logs: [] });
+    return res.status(200).json({
+      success: false,
+      logs: [],
+      error: err?.message || "Failed to fetch logs",
+      stack: err?.stack
+    });
   }
 }
