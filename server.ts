@@ -1,5 +1,5 @@
-import { executeFVU, generateNativeNodeFVU } from "./src/lib/fvuEngine.js";
-import { uploadToSupabase } from "./src/lib/storage.js";
+import { executeFVU, generateNativeNodeFVU } from "./src/lib/fvuEngine";
+import { uploadToSupabase } from "./src/lib/storage";
 import express from "express";
 import path from "path";
 import dotenv from "dotenv";

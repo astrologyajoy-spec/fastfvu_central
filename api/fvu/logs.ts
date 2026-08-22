@@ -1,4 +1,4 @@
-import { pool } from '../_lib/db.js';
+import { pool } from '../_lib/db';
 
 export default async function handler(req: any, res: any) {
   res.setHeader("Access-Control-Allow-Origin", "*");
@@ -10,6 +10,9 @@ export default async function handler(req: any, res: any) {
   }
 
   try {
+    if (!pool) {
+      return res.status(200).json({ logs: [] });
+    }
     const connection = await pool.getConnection();
     try {
       await connection.query(`
