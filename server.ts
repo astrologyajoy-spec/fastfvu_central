@@ -286,41 +286,38 @@ app.post("/api/fvu/validate", async (req, res) => {
 
     if (githubPat) {
       try {
-        const dispatchUrl = `https://api.github.com/repos/${githubRepo}/dispatches`;
-        console.log(`[Express Validation] Dispatching to GitHub Actions: ${dispatchUrl}`);
+        const [owner, repo] = (githubRepo || "astrologyajoy-spec/fastfvu_central").split('/');
+        console.log(`[Express Validation] Triggering GitHub Actions dispatch for ${owner}/${repo} using Octokit...`);
 
-        const dispatchRes = await fetch(dispatchUrl, {
-          method: "POST",
-          headers: {
-            "Accept": "application/vnd.github.v3+json",
-            "Authorization": `Bearer ${githubPat}`,
-            "Content-Type": "application/json",
-            "User-Agent": "FastFVU-Central-App"
-          },
-          body: JSON.stringify({
-            event_type: "fvu_validation",
-            client_payload: {
-              fileName,
-              fileContent,
-              csiFileName,
-              csiFileContent,
-              email,
-              jobId
-            }
-          })
+        const { Octokit } = await import('@octokit/rest');
+        const octokit = new Octokit({ auth: githubPat });
+
+        await octokit.repos.createDispatchEvent({
+          owner,
+          repo,
+          event_type: "fvu_validation",
+          client_payload: {
+            fileName,
+            fileContent,
+            csiFileName,
+            csiFileContent,
+            email,
+            jobId
+          }
         });
 
-        if (dispatchRes.ok || dispatchRes.status === 204) {
-          dispatchedToGithub = true;
-          console.log(`[Express Validation] Dispatched to GitHub Actions (${githubRepo}).`);
-        } else {
-          const errText = await dispatchRes.text();
-          githubDispatchError = `GitHub API HTTP ${dispatchRes.status}: ${errText}`;
-          console.warn(`[Express Validation] GitHub Dispatch error:`, githubDispatchError);
-        }
+        dispatchedToGithub = true;
+        console.log(`[Express Validation] Successfully dispatched FVU job to GitHub Actions (${owner}/${repo}).`);
       } catch (ghErr: any) {
-        githubDispatchError = ghErr?.message || String(ghErr);
-        console.error("[Express Validation] GitHub Dispatch exception:", githubDispatchError);
+        const errMsg = ghErr?.message || String(ghErr);
+        const status = ghErr?.status || 400;
+        console.error(`[Express Validation] GitHub dispatch error (status ${status}):`, errMsg);
+
+        return res.status(status).json({
+          success: false,
+          step: "GITHUB_DISPATCH",
+          error: "Failed to trigger GitHub Action: " + errMsg
+        });
       }
     }
 
