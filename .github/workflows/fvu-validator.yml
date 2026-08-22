@@ -62,6 +62,18 @@ jobs:
               if (!fs.existsSync(jarPath)) {
                 jarPath = path.join(process.cwd(), "fvu-tool", "TDS_TCS_FVU.jar");
               }
+              if (!fs.existsSync(jarPath)) {
+                const searchDirs = [path.join(process.cwd(), "bin"), path.join(process.cwd(), "fvu-tool"), process.cwd()];
+                for (const d of searchDirs) {
+                  if (fs.existsSync(d)) {
+                    const found = fs.readdirSync(d).find(f => f.endsWith(".jar"));
+                    if (found) {
+                      jarPath = path.join(d, found);
+                      break;
+                    }
+                  }
+                }
+              }
 
               console.log(`Executing JAR: ${jarPath}`);
               const cmd = `java -Dfile.encoding=UTF-8 -jar "${jarPath}" "${inputPath}" "${errPath}" "${fvuPath}" 0 "${csiPath}" 0 8.9`;
