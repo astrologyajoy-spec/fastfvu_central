@@ -1,6 +1,9 @@
-const fs = require('fs');
-const path = require('path');
-const mysql = require('mysql2/promise');
+import fs from 'fs';
+import path from 'path';
+import mysql from 'mysql2/promise';
+import { createRequire } from 'module';
+
+const require = createRequire(import.meta.url);
 
 let createClient;
 try {
