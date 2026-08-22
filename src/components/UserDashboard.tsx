@@ -57,6 +57,29 @@ export function UserDashboard({ userSession, onSignOut }: UserDashboardProps) {
     setTimeout(() => setCopiedKey(null), 2000);
   };
 
+  const handleDownload = async (filename: string) => {
+    try {
+      const response = await fetch(`${BACKEND_URL}/api/v1/fvu/download?filename=${filename}`);
+      if (!response.ok) {
+        alert("File could not be downloaded. It may have expired or a server error occurred.");
+        return;
+      }
+      
+      const blob = await response.blob();
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      window.URL.revokeObjectURL(url);
+      document.body.removeChild(a);
+    } catch (err) {
+      console.error("Download error:", err);
+      alert("An error occurred while downloading the file.");
+    }
+  };
+
   const handleRunValidation = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!uploadedFile) return;
@@ -331,24 +354,24 @@ export function UserDashboard({ userSession, onSignOut }: UserDashboardProps) {
 
                     <div className="flex items-center space-x-2">
                       {validationResult.status === 'SUCCESS' && validationResult.fvuFileName && (
-                        <a
-                          href={`${BACKEND_URL}/api/v1/fvu/download/${validationResult.fvuFileName}`}
-                          download
+                        <button
+                          type="button"
+                          onClick={() => handleDownload(validationResult.fvuFileName!)}
                           className="px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-semibold flex items-center space-x-1.5 shadow-sm"
                         >
                           <Download className="w-3.5 h-3.5" />
                           <span>Download .FVU</span>
-                        </a>
+                        </button>
                       )}
                       {validationResult.status === 'FAILED' && validationResult.errorFileName && (
-                        <a
-                          href={`${BACKEND_URL}/api/v1/fvu/download/${validationResult.errorFileName}`}
-                          download
+                        <button
+                          type="button"
+                          onClick={() => handleDownload(validationResult.errorFileName!)}
                           className="px-3 py-1.5 rounded-lg bg-red-600 hover:bg-red-700 text-white text-xs font-semibold flex items-center space-x-1.5 shadow-sm"
                         >
                           <Download className="w-3.5 h-3.5" />
                           <span>Download Error Log (.err)</span>
-                        </a>
+                        </button>
                       )}
                     </div>
                   </div>
@@ -398,9 +421,9 @@ export function UserDashboard({ userSession, onSignOut }: UserDashboardProps) {
                           <td className="px-6 py-4">
                             {log.output_filename ? (
                               <div className="flex items-center space-x-2">
-                                <a 
-                                  href={`${BACKEND_URL}/api/v1/fvu/download/${log.output_filename}`} 
-                                  download 
+                                <button 
+                                  type="button"
+                                  onClick={() => handleDownload(log.output_filename)}
                                   className={`inline-flex items-center space-x-1 text-xs font-medium px-2.5 py-1 rounded-lg transition-colors ${
                                     log.status === 'SUCCESS'
                                       ? 'text-blue-600 hover:text-blue-700 bg-blue-50 hover:bg-blue-100 dark:bg-blue-500/10 dark:text-blue-400 dark:hover:bg-blue-500/20'
@@ -409,7 +432,7 @@ export function UserDashboard({ userSession, onSignOut }: UserDashboardProps) {
                                 >
                                   <Download className="w-3.5 h-3.5" />
                                   <span>{log.status === 'SUCCESS' ? 'Download .FVU' : 'Download .ERR'}</span>
-                                </a>
+                                </button>
                                 {log.status === 'FAILED' && log.error_details && (
                                   <button
                                     onClick={() => {
@@ -536,9 +559,9 @@ export function UserDashboard({ userSession, onSignOut }: UserDashboardProps) {
                           <td className="px-6 py-4">
                             {log.output_filename ? (
                               <div className="flex items-center space-x-2">
-                                <a 
-                                  href={`${BACKEND_URL}/api/v1/fvu/download/${log.output_filename}`} 
-                                  download 
+                                <button 
+                                  type="button"
+                                  onClick={() => handleDownload(log.output_filename)}
                                   className={`inline-flex items-center space-x-1 text-xs font-medium px-3 py-1.5 rounded-lg transition-colors ${
                                     log.status === 'SUCCESS'
                                       ? 'text-blue-600 hover:text-blue-700 bg-blue-50 hover:bg-blue-100 dark:bg-blue-500/10 dark:text-blue-400 dark:hover:bg-blue-500/20'
@@ -547,7 +570,7 @@ export function UserDashboard({ userSession, onSignOut }: UserDashboardProps) {
                                 >
                                   <Download className="w-3.5 h-3.5" />
                                   <span>{log.status === 'SUCCESS' ? 'Download .FVU' : 'Download .ERR'}</span>
-                                </a>
+                                </button>
                                 {log.status === 'FAILED' && log.error_details && (
                                   <button
                                     onClick={() => {
@@ -624,14 +647,14 @@ export function UserDashboard({ userSession, onSignOut }: UserDashboardProps) {
 
             <div className="pt-3 border-t border-slate-200 dark:border-slate-800 flex justify-between items-center">
               {selectedErrorModal.outputFileName ? (
-                <a
-                  href={`${BACKEND_URL}/api/v1/fvu/download/${selectedErrorModal.outputFileName}`}
-                  download
+                <button
+                  type="button"
+                  onClick={() => handleDownload(selectedErrorModal.outputFileName!)}
                   className="inline-flex items-center space-x-1.5 px-4 py-2 rounded-xl bg-red-600 hover:bg-red-700 text-white text-xs font-semibold shadow-sm"
                 >
                   <Download className="w-4 h-4" />
                   <span>Download Raw Error Log (.err)</span>
-                </a>
+                </button>
               ) : <div />}
               <button
                 onClick={() => setSelectedErrorModal(null)}
