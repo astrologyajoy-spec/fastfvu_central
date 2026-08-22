@@ -74,7 +74,6 @@ async function initDB() {
       )
     `);
 
-    // Ensure csi_filename column exists if table was already created
     try {
       await connection.query("ALTER TABLE fvu_logs ADD COLUMN csi_filename VARCHAR(255) NULL");
     } catch (e: any) {
@@ -83,7 +82,7 @@ async function initDB() {
 
     connection.release();
     
-    // 4. Seed dummy data for playground
+    // Seed dummy data for playground
     const [dummyUser]: any = await connection.query("SELECT id FROM users WHERE email = 'developer@fastfvu.central'");
     let dummyUserId;
     if (!dummyUser || dummyUser.length === 0) {
@@ -102,7 +101,6 @@ async function initDB() {
   }
 }
 
-
 // API Routes
 app.get("/api/health", (req, res) => {
   res.json({ status: "ok", database: "TiDB Cloud Connected", timestamp: new Date() });
@@ -115,9 +113,7 @@ function decodeJwtPayload(token: string): any {
       const payloadStr = Buffer.from(parts[1], 'base64').toString('utf-8');
       return JSON.parse(payloadStr);
     }
-  } catch (e) {
-    // Ignore decode error
-  }
+  } catch (e) {}
   return null;
 }
 
@@ -132,7 +128,6 @@ app.post("/api/auth/google", async (req, res) => {
     let email = "";
     let name = "Google User";
 
-    // 1. Try official verification
     if (googleClient) {
       try {
         const ticket = await googleClient.verifyIdToken({
@@ -149,7 +144,6 @@ app.post("/api/auth/google", async (req, res) => {
       }
     }
 
-    // 2. Fallback: Parse decoded JWT payload if verifyIdToken failed
     if (!email) {
       const decoded = decodeJwtPayload(credential);
       if (decoded && decoded.email) {
@@ -164,7 +158,6 @@ app.post("/api/auth/google", async (req, res) => {
 
     let finalApiKey = 'fvu_live_' + Math.random().toString(36).substring(2, 12) + 'x';
 
-    // 3. Database persistence with graceful fallback
     try {
       if (pool) {
         const connection = await pool.getConnection();
@@ -217,7 +210,6 @@ app.post("/api/auth/register", async (req, res) => {
 
     const connection = await pool.getConnection();
     try {
-      // Insert user if not exists
       await connection.query(
         "INSERT INTO users (email, password) VALUES (?, ?) ON DUPLICATE KEY UPDATE email=email",
         [email, password]
@@ -226,7 +218,6 @@ app.post("/api/auth/register", async (req, res) => {
       const [users]: any = await connection.query("SELECT id FROM users WHERE email = ?", [email]);
       const userId = users[0].id;
 
-      // Check if API key already exists for this user (they might have registered twice)
       const [existingKeys]: any = await connection.query("SELECT api_key FROM api_keys WHERE user_id = ?", [userId]);
       let finalApiKey = apiKey;
       if (existingKeys && existingKeys.length > 0) {
@@ -244,7 +235,6 @@ app.post("/api/auth/register", async (req, res) => {
     }
   } catch (err: any) {
     console.error("Register error:", err);
-    // If api key collision or general error, generate another or return success with existing
     const fallbackKey = 'fvu_live_' + Math.random().toString(36).substring(2, 12) + 'x';
     res.json({ success: true, email: req.body.email, apiKey: fallbackKey });
   }
@@ -321,7 +311,7 @@ app.post("/api/fvu/validate", async (req, res) => {
       });
     }
 
-    // Fallback: Use FastFVU Native JS Engine (Zero Java calls)
+    // Fallback: Use FastFVU Native JS Engine
     const headerDetails = {
       rpuSoftware: "FastFVU Central",
       fileType: "TDS/TCS",
@@ -430,7 +420,6 @@ app.get("/api/fvu/logs", async (req, res) => {
   }
 });
 
-
 // External Developer API Endpoint
 app.post("/api/v1/fvu/generate", async (req, res) => {
   try {
@@ -458,7 +447,6 @@ app.post("/api/v1/fvu/generate", async (req, res) => {
       apiKeyId = keys[0].id;
       userId = keys[0].user_id;
 
-      // Process using Java Engine
       const fvuResult = await executeFVU(statementData, fileName, csiData, csiFileName);
       const recordedOutputFile = fvuResult.success ? fvuResult.fvuFileName : fvuResult.errorFileName;
 
@@ -503,8 +491,6 @@ app.post("/api/v1/fvu/generate", async (req, res) => {
   }
 });
 
-
-
 // Download FVU or Error file
 app.get("/api/v1/fvu/download", async (req, res) => {
   const filename = req.query.filename;
@@ -544,7 +530,6 @@ app.get("/api/v1/fvu/download", async (req, res) => {
     }
   }
 
-  // Fallback to local temp directory (for Render execution)
   const parts = filename.split('_');
   const sessionId = parts.length >= 2 ? parts[1].split('.')[0] : 'default';
   const filePath = path.join(process.cwd(), 'temp', sessionId, filename);
