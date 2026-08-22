@@ -29,7 +29,7 @@ export interface FVUResult {
   success: boolean;
   fvuFilePath?: string;
   fvuFileName?: string;
-  fvuFileContent?: string;
+  fvuFileContent?: string | Buffer;
   errorFilePath?: string;
   errorFileName?: string;
   errorContent?: string;
@@ -202,147 +202,160 @@ export async function executeFVU(
   
   await fs.mkdir(tempDir, { recursive: true });
 
-  // 1. Inspect and Parse Header Details from TXT File
-  const headerDetails = parseTdsHeader(fileContent);
-
-  // Discover available JARs in fvu-tool/
-  let availableJars: string[] = [];
   try {
-    const binFiles = await fs.readdir(path.resolve(process.cwd(), 'fvu-tool'));
-    availableJars = binFiles.filter(f => f.endsWith('.jar'));
-  } catch (e) {
-    availableJars = ['TDS_TCS_FVU.jar'];
-  }
+    // 1. Inspect and Parse Header Details from TXT File
+    const headerDetails = parseTdsHeader(fileContent);
 
-  // 2. Resolve Dynamic JAR Route & CLI Arguments
-  const route = resolveJarRoute(headerDetails, availableJars);
+    // Discover available JARs in fvu-tool/
+    let availableJars: string[] = [];
+    try {
+      const binFiles = await fs.readdir(path.resolve(process.cwd(), 'fvu-tool'));
+      availableJars = binFiles.filter(f => f.endsWith('.jar'));
+    } catch (e) {
+      availableJars = ['TDS_TCS_FVU.jar'];
+    }
 
-  // Sanitize paths
-  const safeBaseName = originalFileName.replace(/[^a-zA-Z0-9._-]/g, '_').replace(/\.[^/.]+$/, "");
-  const inputFileName = `${safeBaseName}_${sessionId}.txt`;
-  const inputFilePath = path.resolve(tempDir, inputFileName);
-  const errorFilePath = path.resolve(tempDir, `error_${sessionId}.err`);
-  const fvuFilePath = path.resolve(tempDir, `output_${sessionId}.fvu`);
+    // 2. Resolve Dynamic JAR Route & CLI Arguments
+    const route = resolveJarRoute(headerDetails, availableJars);
 
-  let csiFilePath = "0";
-  if (csiContent && csiContent.trim()) {
-    const safeCsiName = csiFileName 
-      ? csiFileName.replace(/[^a-zA-Z0-9._-]/g, '_').replace(/\.[^/.]+$/, "") 
-      : 'challan';
-    const csiName = `${safeCsiName}_${sessionId}.csi`;
-    csiFilePath = path.resolve(tempDir, csiName);
-    await fs.writeFile(csiFilePath, csiContent, { encoding: 'utf-8' });
-  }
+    // Sanitize paths
+    const safeBaseName = originalFileName.replace(/[^a-zA-Z0-9._-]/g, '_').replace(/\.[^/.]+$/, "");
+    const inputFileName = `${safeBaseName}_${sessionId}.txt`;
+    const inputFilePath = path.resolve(tempDir, inputFileName);
+    const errorFilePath = path.resolve(tempDir, `error_${sessionId}.err`);
+    const fvuFilePath = path.resolve(tempDir, `output_${sessionId}.fvu`);
 
-  // Write the input text file with UTF-8 encoding
-  await fs.writeFile(inputFilePath, fileContent, { encoding: 'utf-8' });
+    let csiFilePath = "0";
+    if (csiContent && csiContent.trim()) {
+      const safeCsiName = csiFileName 
+        ? csiFileName.replace(/[^a-zA-Z0-9._-]/g, '_').replace(/\.[^/.]+$/, "") 
+        : 'challan';
+      const csiName = `${safeCsiName}_${sessionId}.csi`;
+      csiFilePath = path.resolve(tempDir, csiName);
+      await fs.writeFile(csiFilePath, csiContent, { encoding: 'utf-8' });
+    }
 
-  // CLI Arguments for NSDL Standalone JAR:
-  // <TXT_PATH> <ERR_PATH> <FVU_PATH> <CONSOLIDATED_FLAG> <CSI_PATH_OR_0> <HTML_FLAG> <VERSION>
-  const jvmArgs = [
-    '-Dfile.encoding=UTF-8',
-    '-jar',
-    route.jarPath,
-    inputFilePath,
-    errorFilePath,
-    fvuFilePath,
-    route.consolidatedFlag,
-    csiFilePath,
-    route.htmlFlag,
-    route.fvuVersionArg
-  ];
+    // Write the input text file with UTF-8 encoding
+    await fs.writeFile(inputFilePath, fileContent, { encoding: 'utf-8' });
 
-  let stdoutOutput = '';
-  let stderrOutput = '';
-  let javaExecError: Error | null = null;
+    // CLI Arguments for NSDL Standalone JAR:
+    // <TXT_PATH> <ERR_PATH> <FVU_PATH> <CONSOLIDATED_FLAG> <CSI_PATH_OR_0> <HTML_FLAG> <VERSION>
+    const jvmArgs = [
+      '-Dfile.encoding=UTF-8',
+      '-jar',
+      route.jarPath,
+      inputFilePath,
+      errorFilePath,
+      fvuFilePath,
+      route.consolidatedFlag,
+      csiFilePath,
+      route.htmlFlag,
+      route.fvuVersionArg
+    ];
 
-  const fvuToolDir = path.resolve(process.cwd(), 'fvu-tool');
+    let stdoutOutput = '';
+    let stderrOutput = '';
+    let javaExecError: Error | null = null;
 
-  await new Promise<void>((resolve) => {
-    execFile('java', jvmArgs, { cwd: fvuToolDir, encoding: 'utf-8', maxBuffer: 10 * 1024 * 1024 }, (err, stdout, stderr) => {
-      if (err) {
-        javaExecError = err;
-        console.warn("NSDL Java process warning/exit:", err.message);
-      }
-      stdoutOutput = stdout || '';
-      stderrOutput = stderr || '';
-      resolve();
+    const fvuToolDir = path.resolve(process.cwd(), 'fvu-tool');
+
+    await new Promise<void>((resolve) => {
+      execFile('java', jvmArgs, { cwd: fvuToolDir, encoding: 'utf-8', maxBuffer: 10 * 1024 * 1024 }, (err, stdout, stderr) => {
+        if (err) {
+          javaExecError = err;
+          console.warn("NSDL Java process warning/exit:", err.message);
+        }
+        stdoutOutput = stdout || '';
+        stderrOutput = stderr || '';
+        resolve();
+      });
     });
-  });
 
-  // Check if output FVU exists
-  let fvuExists = false;
-  let fvuFileContent = '';
-  try {
-    const stat = await fs.stat(fvuFilePath);
-    if (stat.size > 0) {
-      fvuExists = true;
-      fvuFileContent = await fs.readFile(fvuFilePath, 'utf-8');
-    }
-  } catch {
-    fvuExists = false;
-  }
+    // Check if output FVU exists anywhere in the temp directory (NSDL might change names)
+    let fvuExists = false;
+    let fvuFileContent: Buffer | undefined = undefined;
+    let finalFvuName = path.basename(fvuFilePath);
 
-  // Read error report
-  let errContent = '';
-  let errorFileFound = false;
-
-  try {
-    errContent = await fs.readFile(errorFilePath, 'utf-8');
-    if (errContent.trim().length > 0) {
-      errorFileFound = true;
-    }
-  } catch {
     try {
       const files = await fs.readdir(tempDir);
-      for (const f of files) {
-        if (f.endsWith('.err') || f.endsWith('.html') || f.includes('error')) {
-          const content = await fs.readFile(path.join(tempDir, f), 'utf-8');
-          if (content.trim().length > 0) {
-            errContent = content;
-            errorFileFound = true;
-            break;
-          }
+      const generatedFvu = files.find(f => f.toLowerCase().endsWith('.fvu'));
+      if (generatedFvu) {
+        const actualPath = path.join(tempDir, generatedFvu);
+        const stat = await fs.stat(actualPath);
+        if (stat.size > 0) {
+          fvuExists = true;
+          fvuFileContent = await fs.readFile(actualPath);
+          finalFvuName = generatedFvu;
         }
       }
-    } catch {}
-  }
-
-  const processingTimeMs = Date.now() - startTime;
-
-  if (!fvuExists) {
-    let parsedErrors: Array<{ line?: number; code: string; message: string }> = [];
-
-    if (errorFileFound && errContent.trim()) {
-      parsedErrors = parseNsdlErrorLog(errContent);
-    } else if (stderrOutput.trim()) {
-      parsedErrors = [{ line: 1, code: 'JVM_STDERR', message: stderrOutput.trim() }];
-      errContent = `JVM Standard Error:\n${stderrOutput.trim()}`;
-    } else if (javaExecError) {
-      const isJavaMissing = (javaExecError as any).code === 'ENOENT' || javaExecError.message.includes('not found');
-      if (isJavaMissing) {
-        const msg = "Java Runtime Environment (JRE) is not available in current container PATH. Ensure Java 8/11/17 is installed to execute NSDL Standalone JAR.";
-        parsedErrors = [{ line: 1, code: 'JRE_NOT_FOUND', message: msg }];
-        errContent = `NSDL Standalone Engine Error:\n------------------------------------\n${msg}\nCommand: java ${jvmArgs.join(' ')}`;
-      } else {
-        parsedErrors = [{ line: 1, code: 'JAVA_EXEC_ERR', message: javaExecError.message }];
-        errContent = `Java Execution Error:\n${javaExecError.message}\n${stdoutOutput}\n${stderrOutput}`;
-      }
-    } else {
-      parsedErrors = [{ line: 1, code: 'T-FVU-FAIL', message: 'Java FVU Validation Failed: .fvu file was not generated.' }];
-      errContent = `NSDL Standalone FVU Engine Report\n----------------------------------------------------\nOriginal File: ${originalFileName}\nRPU Software: ${headerDetails.rpuSoftware || 'Unknown'}\nForm Type: ${headerDetails.formType || 'Unknown'}\nTAN: ${headerDetails.tan || 'Unknown'}\nStatus: VALIDATION FAILED\n\nDetails: Output .fvu file was not generated by Java Engine.`;
+    } catch (err) {
+      console.warn("Error scanning temp files for FVU:", err);
     }
 
+    // Read error report
+    let errContent = '';
+    let errorFileFound = false;
+    let finalErrorName = path.basename(errorFilePath);
+
     try {
-      await fs.writeFile(errorFilePath, errContent, { encoding: 'utf-8' });
-    } catch {}
+      const files = await fs.readdir(tempDir);
+      const generatedErr = files.find(f => f.toLowerCase().endsWith('.err') || f.toLowerCase().endsWith('.html') || f.toLowerCase().includes('error'));
+      if (generatedErr) {
+        const actualPath = path.join(tempDir, generatedErr);
+        const stat = await fs.stat(actualPath);
+        if (stat.size > 0) {
+          errorFileFound = true;
+          errContent = await fs.readFile(actualPath, 'utf-8');
+          finalErrorName = generatedErr;
+        }
+      }
+    } catch (err) {}
+
+    const processingTimeMs = Date.now() - startTime;
+
+    if (!fvuExists) {
+      let parsedErrors: Array<{ line?: number; code: string; message: string }> = [];
+
+      if (errorFileFound && errContent.trim()) {
+        parsedErrors = parseNsdlErrorLog(errContent);
+      } else if (stderrOutput.trim()) {
+        parsedErrors = [{ line: 1, code: 'JVM_STDERR', message: stderrOutput.trim() }];
+        errContent = `JVM Standard Error:\n${stderrOutput.trim()}`;
+      } else if (javaExecError) {
+        const isJavaMissing = (javaExecError as any).code === 'ENOENT' || javaExecError.message.includes('not found');
+        if (isJavaMissing) {
+          const msg = "Java Runtime Environment (JRE) is not available in current container PATH. Ensure Java 8/11/17 is installed to execute NSDL Standalone JAR.";
+          parsedErrors = [{ line: 1, code: 'JRE_NOT_FOUND', message: msg }];
+          errContent = `NSDL Standalone Engine Error:\n------------------------------------\n${msg}\nCommand: java ${jvmArgs.join(' ')}`;
+        } else {
+          parsedErrors = [{ line: 1, code: 'JAVA_EXEC_ERR', message: javaExecError.message }];
+          errContent = `Java Execution Error:\n${javaExecError.message}\n${stdoutOutput}\n${stderrOutput}`;
+        }
+      } else {
+        parsedErrors = [{ line: 1, code: 'T-FVU-FAIL', message: 'Java FVU Validation Failed: .fvu file was not generated.' }];
+        errContent = `NSDL Standalone FVU Engine Report\n----------------------------------------------------\nOriginal File: ${originalFileName}\nRPU Software: ${headerDetails.rpuSoftware || 'Unknown'}\nForm Type: ${headerDetails.formType || 'Unknown'}\nTAN: ${headerDetails.tan || 'Unknown'}\nStatus: VALIDATION FAILED\n\nDetails: Output .fvu file was not generated by Java Engine.`;
+      }
+
+      return {
+        success: false,
+        errorFilePath,
+        errorFileName: finalErrorName,
+        errorContent: errContent,
+        errors: parsedErrors,
+        headerDetails,
+        selectedJar: route.jarName,
+        fvuVersionUsed: route.fvuVersionArg,
+        stdout: stdoutOutput,
+        stderr: stderrOutput,
+        processingTimeMs
+      };
+    }
 
     return {
-      success: false,
-      errorFilePath,
-      errorFileName: path.basename(errorFilePath),
-      errorContent: errContent,
-      errors: parsedErrors,
+      success: true,
+      fvuFilePath,
+      fvuFileName: finalFvuName,
+      fvuFileContent,
       headerDetails,
       selectedJar: route.jarName,
       fvuVersionUsed: route.fvuVersionArg,
@@ -350,18 +363,12 @@ export async function executeFVU(
       stderr: stderrOutput,
       processingTimeMs
     };
+  } finally {
+    // 3. Clean Up Temp Files to prevent disk space leaks
+    try {
+      await fs.rm(tempDir, { recursive: true, force: true });
+    } catch (rmErr) {
+      console.error(`Failed to clean up temp dir ${tempDir}:`, rmErr);
+    }
   }
-
-  return {
-    success: true,
-    fvuFilePath,
-    fvuFileName: path.basename(fvuFilePath),
-    fvuFileContent,
-    headerDetails,
-    selectedJar: route.jarName,
-    fvuVersionUsed: route.fvuVersionArg,
-    stdout: stdoutOutput,
-    stderr: stderrOutput,
-    processingTimeMs
-  };
 }

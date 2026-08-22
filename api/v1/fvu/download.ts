@@ -9,7 +9,6 @@ export default async function handler(req: any, res: any) {
   }
 
   const { filename } = req.query;
-
   if (!filename || typeof filename !== 'string') {
     return res.status(400).json({ error: "Filename is required" });
   }
@@ -19,8 +18,6 @@ export default async function handler(req: any, res: any) {
   const bucketName = process.env.SUPABASE_BUCKET_NAME || 'fvu-logs';
 
   try {
-    let fileBuffer: Buffer | null = null;
-
     if (supabaseUrl && supabaseKey) {
       // Fetch the file from Supabase Storage
       const response = await fetch(`${supabaseUrl}/storage/v1/object/${bucketName}/${filename}`, {
@@ -31,32 +28,19 @@ export default async function handler(req: any, res: any) {
 
       if (response.ok) {
         const arrayBuffer = await response.arrayBuffer();
-        fileBuffer = Buffer.from(arrayBuffer);
+        const fileBuffer = Buffer.from(arrayBuffer);
+        
+        // Set headers to force download as an attachment
+        res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
+        res.setHeader("Content-Type", "application/octet-stream");
+        return res.status(200).send(fileBuffer);
       } else {
         console.warn(`Supabase fetch failed for ${filename}:`, response.status);
+        return res.status(404).json({ error: "File not found in storage." });
       }
+    } else {
+      return res.status(500).json({ error: "Storage not configured." });
     }
-
-    // Fallback: If not found in Supabase (or no Supabase), generate a synthetic file for testing
-    if (!fileBuffer) {
-      const isErr = filename.endsWith('.err') || filename.endsWith('.html');
-      let syntheticContent = "";
-      
-      if (isErr) {
-        syntheticContent = `TDS/TCS File Validation Utility Error Report\n------------------------------------------------\nFile Name: ${filename}\nStatus: FAILED\n\nErrors:\n1. T-FV-2041: TAN or PAN syntax failed checksum algorithm validation.\n\nPlease fix the errors and re-validate.`;
-      } else {
-        syntheticContent = `1^${filename}^SUCCESS^FVU-1.1^${new Date().toISOString()}\nValidation successful.`;
-      }
-      
-      fileBuffer = Buffer.from(syntheticContent, 'utf-8');
-    }
-
-    // Set headers to force download as an attachment
-    res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
-    res.setHeader("Content-Type", "application/octet-stream");
-
-    // Stream the file back
-    return res.status(200).send(fileBuffer);
   } catch (error) {
     console.error("Download error:", error);
     return res.status(500).json({ error: "Failed to download file" });
