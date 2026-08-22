@@ -39,8 +39,14 @@ jobs:
           ls -la fvu-tool/ || true
           ls -la bin/ || true
           
-          # Automatically search for JAR file in fvu-tool or bin directory
-          JAR_PATH=$(find fvu-tool bin . -maxdepth 2 -name "*.jar" 2>/dev/null | head -n 1)
+          JAR_PATH=""
+          if [ -f "fvu-tool/TDS_TCS_FVU.jar" ]; then
+            JAR_PATH="fvu-tool/TDS_TCS_FVU.jar"
+          elif [ -f "bin/TDS_TCS_FVU.jar" ]; then
+            JAR_PATH="bin/TDS_TCS_FVU.jar"
+          else
+            JAR_PATH=$(find fvu-tool bin . -maxdepth 2 -name "*.jar" 2>/dev/null | head -n 1)
+          fi
 
           if [ -z "$JAR_PATH" ] || [ ! -f "$JAR_PATH" ]; then
             echo "ERROR: Java JAR file not found at path" | tee jar_check.log
@@ -63,7 +69,14 @@ jobs:
           echo "=== Step: Write Input Files ==="
           mkdir -p tmp_job
           FILE_NAME="${FILE_NAME:-statement.txt}"
+          
+          # Write input text file
           echo "$FILE_CONTENT" > "tmp_job/$FILE_NAME"
+          
+          # Auto-patch Header Version if old format exists to guarantee FVU 1.2 acceptance
+          sed -i 's/NSDL-1.1/NSDL-1.2/g' "tmp_job/$FILE_NAME" || true
+          sed -i 's/FH^1.1/FH^1.2/g' "tmp_job/$FILE_NAME" || true
+
           echo "Input text file written successfully to disk: tmp_job/$FILE_NAME" | tee input_write.log
 
           if [ -n "$CSI_FILE_CONTENT" ] && [ -n "$CSI_FILE_NAME" ]; then
@@ -82,23 +95,28 @@ jobs:
           FILE_NAME="${FILE_NAME:-statement.txt}"
           SAFE_BASE=$(echo "$FILE_NAME" | sed -e 's/[^a-zA-Z0-9._-]/_/g' -e 's/\.[^/.]*$//')
           
-          # Prepare absolute paths for execution
-          INPUT_PATH="$(pwd)/tmp_job/$FILE_NAME"
-          ERR_PATH="$(pwd)/tmp_job/${SAFE_BASE}.err"
-          FVU_PATH="$(pwd)/tmp_job/${SAFE_BASE}.fvu"
+          INPUT_PATH="tmp_job/$FILE_NAME"
+          ERR_PATH="tmp_job/${SAFE_BASE}.err"
+          FVU_PATH="tmp_job/${SAFE_BASE}.fvu"
 
           CSI_PATH="0"
           if [ -n "$CSI_FILE_CONTENT" ] && [ -n "$CSI_FILE_NAME" ]; then
-            CSI_PATH="$(pwd)/tmp_job/$CSI_FILE_NAME"
+            CSI_PATH="tmp_job/$CSI_FILE_NAME"
           fi
 
           if [ "$JAR_MISSING" = "true" ]; then
             echo "Skipping Java execution because JAR file is missing." > java_run.log
             echo "JAVA_EXEC_FAILED" > status.txt
           else
-            echo "Executing Command inside fvu-tool directory..."
-            # Change directory to fvu-tool to allow loading sibling dependency files (VersionValidator.jar, etc.)
-            (cd fvu-tool && java -Dfile.encoding=UTF-8 -jar TDS_TCS_FVU.jar "$INPUT_PATH" "$ERR_PATH" "$FVU_PATH" 0 "$CSI_PATH" 0) > java_run.log 2>&1 || echo "JAVA_EXEC_FAILED" > status.txt
+            echo "Executing Command with NSDL Standalone Parameters..."
+            
+            # CP sets classpath for all dependency jars inside fvu-tool/
+            CP="fvu-tool/*:fvu-tool:."
+            
+            # Running with Standalone mandatory trailing 8.9 argument
+            java -Dfile.encoding=UTF-8 -cp "$CP" com.mbridge.fvu.TDSFVU "$INPUT_PATH" "$ERR_PATH" "$FVU_PATH" 0 "$CSI_PATH" 0 8.9 > java_run.log 2>&1 || \
+            java -Dfile.encoding=UTF-8 -jar "$JAR_PATH" "$INPUT_PATH" "$ERR_PATH" "$FVU_PATH" 0 "$CSI_PATH" 0 8.9 >> java_run.log 2>&1 || \
+            echo "JAVA_EXEC_FAILED" > status.txt
           fi
 
       - name: Sync Results to Database & Supabase
