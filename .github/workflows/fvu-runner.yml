@@ -23,9 +23,6 @@ jobs:
         with:
           node-version: '22'
 
-      - name: Install Dependencies for Sync Script
-        run: npm install mysql2 @supabase/supabase-js
-
       - name: Check Java Installation
         id: check_java
         run: |
@@ -125,6 +122,8 @@ jobs:
           DB_PORT: ${{ secrets.DB_PORT || secrets.TIDB_PORT }}
         run: |
           echo "=== Step: Database & Storage Sync ==="
+          npm install mysql2 @supabase/supabase-js --no-save
+          
           export JAVA_VERSION_LOG="$(cat java_version.log 2>/dev/null || echo 'Not available')"
           export JAR_CHECK_LOG="$(cat jar_check.log 2>/dev/null || echo 'Not available')"
           export INPUT_WRITE_LOG="$(cat input_write.log 2>/dev/null || echo 'Not available')"
