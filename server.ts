@@ -266,12 +266,39 @@ app.post("/api/fvu/validate", async (req, res) => {
     const fvuResult = await executeFVU(fileContent, fileName, csiFileContent || undefined, csiFileName || undefined);
     const recordedOutputFile = fvuResult.success ? fvuResult.fvuFileName : fvuResult.errorFileName;
 
-    // Upload logs/outputs to Supabase Storage Bucket
-    if (fvuResult.success && fvuResult.fvuFileName && fvuResult.fvuFileContent) {
-      await uploadToSupabase(fvuResult.fvuFileName, fvuResult.fvuFileContent);
-    } else if (!fvuResult.success && fvuResult.errorFileName && fvuResult.errorContent) {
-      await uploadToSupabase(fvuResult.errorFileName, fvuResult.errorContent);
+    // Prepare base64 / text content payload for fallback download
+    let fileContentBase64: string | null = null;
+    let rawTextContent: string | null = null;
+
+    if (fvuResult.success && fvuResult.fvuFileContent) {
+      if (Buffer.isBuffer(fvuResult.fvuFileContent)) {
+        fileContentBase64 = fvuResult.fvuFileContent.toString('base64');
+      } else if (typeof fvuResult.fvuFileContent === 'string') {
+        fileContentBase64 = Buffer.from(fvuResult.fvuFileContent, 'utf-8').toString('base64');
+        rawTextContent = fvuResult.fvuFileContent;
+      }
+    } else if (!fvuResult.success && fvuResult.errorContent) {
+      rawTextContent = fvuResult.errorContent;
+      fileContentBase64 = Buffer.from(fvuResult.errorContent, 'utf-8').toString('base64');
     }
+
+    // Upload logs/outputs to Supabase Storage Bucket
+    let storageUrl: string | null = null;
+    try {
+      if (fvuResult.success && fvuResult.fvuFileName && fvuResult.fvuFileContent) {
+        storageUrl = await uploadToSupabase(fvuResult.fvuFileName, fvuResult.fvuFileContent);
+      } else if (!fvuResult.success && fvuResult.errorFileName && fvuResult.errorContent) {
+        storageUrl = await uploadToSupabase(fvuResult.errorFileName, fvuResult.errorContent);
+      }
+    } catch (uploadErr) {
+      console.error("[Validation] Supabase upload failed:", uploadErr);
+    }
+
+    const dataUriFallback = fileContentBase64
+      ? `data:application/octet-stream;base64,${fileContentBase64}`
+      : null;
+
+    const downloadUrl = storageUrl || dataUriFallback || (recordedOutputFile ? `/api/v1/fvu/download?filename=${recordedOutputFile}` : null);
 
     const connection = await pool.getConnection();
     try {
@@ -299,7 +326,11 @@ app.post("/api/fvu/validate", async (req, res) => {
         status: "FAILED",
         errors: fvuResult.errors,
         errorFileName: fvuResult.errorFileName,
-        processingTimeMs: fvuResult.processingTimeMs
+        downloadUrl,
+        fileContentBase64,
+        errorContent: rawTextContent,
+        processingTimeMs: fvuResult.processingTimeMs,
+        message: "FVU Validation failed. Please review the NSDL error report."
       });
     }
 
@@ -309,7 +340,9 @@ app.post("/api/fvu/validate", async (req, res) => {
       errorCount: 0,
       processingTimeMs: fvuResult.processingTimeMs,
       fvuFileName: fvuResult.fvuFileName,
-      message: "Validated successfully by NSDL Java Standalone Engine and saved to TiDB Cloud."
+      downloadUrl,
+      fileContentBase64,
+      message: "Validated successfully by NSDL Java Standalone Engine."
     });
   } catch (err: any) {
     console.error("Validation error:", err);
@@ -413,27 +446,37 @@ app.post("/api/v1/fvu/generate", async (req, res) => {
 
 // Download FVU or Error file
 app.get("/api/v1/fvu/download", async (req, res) => {
-  const filename = req.query.filename as string;
-  if (!filename) {
+  const filename = req.query.filename;
+  if (!filename || typeof filename !== 'string') {
     return res.status(400).send("Filename is required");
   }
 
   const supabaseUrl = process.env.SUPABASE_URL;
-  const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_ANON_KEY;
   const bucketName = process.env.SUPABASE_BUCKET_NAME || 'fvu-logs';
 
-  if (supabaseUrl && supabaseKey) {
+  if (supabaseUrl) {
     try {
-      const response = await fetch(`${supabaseUrl}/storage/v1/object/${bucketName}/${filename}`, {
-        headers: {
-          'Authorization': `Bearer ${supabaseKey}`
-        }
-      });
+      const publicUrl = `${supabaseUrl}/storage/v1/object/public/${bucketName}/${filename}`;
+      const response = await fetch(publicUrl);
+      
       if (response.ok) {
         res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
         res.setHeader("Content-Type", "application/octet-stream");
         const buffer = await response.arrayBuffer();
         return res.status(200).send(Buffer.from(buffer));
+      } else {
+        const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_ANON_KEY;
+        if (supabaseKey) {
+          const authResponse = await fetch(`${supabaseUrl}/storage/v1/object/authenticated/${bucketName}/${filename}`, {
+            headers: { 'Authorization': `Bearer ${supabaseKey}` }
+          });
+          if (authResponse.ok) {
+            res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
+            res.setHeader("Content-Type", "application/octet-stream");
+            const buffer = await authResponse.arrayBuffer();
+            return res.status(200).send(Buffer.from(buffer));
+          }
+        }
       }
     } catch (err) {
       console.warn("Supabase fetch failed, falling back to local temp:", err);
@@ -441,6 +484,7 @@ app.get("/api/v1/fvu/download", async (req, res) => {
   }
 
   // Fallback to local temp directory (for Render execution)
+  const path = require('path');
   const parts = filename.split('_');
   const sessionId = parts.length >= 2 ? parts[1].split('.')[0] : 'default';
   const filePath = path.join(process.cwd(), 'temp', sessionId, filename);
@@ -459,7 +503,6 @@ app.get("/api/v1/fvu/download", async (req, res) => {
     }
   });
 });
-
 
 async function startServer() {
   await initDB();

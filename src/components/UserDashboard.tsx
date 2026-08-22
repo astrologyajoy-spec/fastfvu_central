@@ -25,7 +25,16 @@ export function UserDashboard({ userSession, onSignOut }: UserDashboardProps) {
   const [validating, setValidating] = useState(false);
   const [uploadedFile, setUploadedFile] = useState<File | null>(null);
   const [uploadedCsiFile, setUploadedCsiFile] = useState<File | null>(null);
-  const [validationResult, setValidationResult] = useState<{ status: 'SUCCESS' | 'FAILED'; message: string; fvuFileName?: string; errorFileName?: string; errors?: any[] } | null>(null);
+  const [validationResult, setValidationResult] = useState<{ 
+    status: 'SUCCESS' | 'FAILED'; 
+    message: string; 
+    fvuFileName?: string; 
+    errorFileName?: string; 
+    errors?: any[];
+    downloadUrl?: string;
+    fileContentBase64?: string;
+    errorContent?: string;
+  } | null>(null);
   const [selectedErrorModal, setSelectedErrorModal] = useState<{ fileName: string; outputFileName?: string; errors: any[] } | null>(null);
 
   const fetchLogs = async () => {
@@ -57,11 +66,88 @@ export function UserDashboard({ userSession, onSignOut }: UserDashboardProps) {
     setTimeout(() => setCopiedKey(null), 2000);
   };
 
-  const handleDownload = async (filename: string) => {
+  const handleDownload = async (filename: string, directUrlOrContent?: string) => {
     try {
-      const response = await fetch(`${BACKEND_URL}/api/v1/fvu/download?filename=${filename}`);
+      let targetUrl = directUrlOrContent;
+
+      // Check if current validation result matches filename and has downloadUrl or in-memory content
+      if (!targetUrl && validationResult) {
+        if ((filename === validationResult.fvuFileName || filename === validationResult.errorFileName) && validationResult.downloadUrl) {
+          targetUrl = validationResult.downloadUrl;
+        } else if (filename === validationResult.errorFileName && validationResult.errorContent) {
+          const blob = new Blob([validationResult.errorContent], { type: 'text/plain;charset=utf-8' });
+          const url = window.URL.createObjectURL(blob);
+          const a = document.createElement('a');
+          a.href = url;
+          a.download = filename;
+          document.body.appendChild(a);
+          a.click();
+          window.URL.revokeObjectURL(url);
+          document.body.removeChild(a);
+          return;
+        }
+      }
+
+      // Handle Data URI or Blob URL
+      if (targetUrl && (targetUrl.startsWith('data:') || targetUrl.startsWith('blob:'))) {
+        const a = document.createElement('a');
+        a.href = targetUrl;
+        a.download = filename;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        return;
+      }
+
+      // Handle Direct HTTP/HTTPS Supabase or Storage URL
+      if (targetUrl && (targetUrl.startsWith('http://') || targetUrl.startsWith('https://'))) {
+        try {
+          const response = await fetch(targetUrl);
+          if (response.ok) {
+            const blob = await response.blob();
+            const url = window.URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = filename;
+            document.body.appendChild(a);
+            a.click();
+            window.URL.revokeObjectURL(url);
+            document.body.removeChild(a);
+            return;
+          }
+        } catch (e) {
+          console.warn("Direct download fetch failed, falling back to download API:", e);
+        }
+      }
+
+      // Fallback: Fetch via Backend Download Endpoint
+      const response = await fetch(`${BACKEND_URL}/api/v1/fvu/download?filename=${encodeURIComponent(filename)}`);
       if (!response.ok) {
-        alert("File could not be downloaded. It may have expired or a server error occurred.");
+        // Fallback to in-memory base64 if present
+        if (validationResult && validationResult.fileContentBase64) {
+          try {
+            const byteCharacters = atob(validationResult.fileContentBase64);
+            const byteNumbers = new Array(byteCharacters.length);
+            for (let i = 0; i < byteCharacters.length; i++) {
+              byteNumbers[i] = byteCharacters.charCodeAt(i);
+            }
+            const byteArray = new Uint8Array(byteNumbers);
+            const blob = new Blob([byteArray], { type: 'application/octet-stream' });
+            const url = window.URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = filename;
+            document.body.appendChild(a);
+            a.click();
+            window.URL.revokeObjectURL(url);
+            document.body.removeChild(a);
+            return;
+          } catch (b64Err) {
+            console.error("Failed decoding in-memory base64 fallback:", b64Err);
+          }
+        }
+
+        alert("File could not be downloaded from server storage. Please re-run validation.");
         return;
       }
       
@@ -128,15 +214,20 @@ export function UserDashboard({ userSession, onSignOut }: UserDashboardProps) {
       if (!res.ok || data.status === 'FAILED') {
         setValidationResult({
           status: 'FAILED',
-          message: data.error || 'NSDL Java FVU Validation failed. Please check error report.',
+          message: data.message || data.error || 'NSDL Java FVU Validation failed. Please review error report.',
           errorFileName: data.errorFileName,
-          errors: data.errors || []
+          errors: data.errors || [],
+          downloadUrl: data.downloadUrl,
+          fileContentBase64: data.fileContentBase64,
+          errorContent: data.errorContent
         });
       } else {
         setValidationResult({
           status: 'SUCCESS',
-          message: 'Validated successfully by NSDL Standalone Java Engine.',
-          fvuFileName: data.fvuFileName
+          message: data.message || 'Validated successfully by NSDL Standalone Java Engine.',
+          fvuFileName: data.fvuFileName,
+          downloadUrl: data.downloadUrl,
+          fileContentBase64: data.fileContentBase64
         });
       }
 

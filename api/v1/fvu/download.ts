@@ -20,7 +20,8 @@ export default async function handler(req: any, res: any) {
     return res.status(400).json({ error: "Filename is required" });
   }
 
-  const supabaseUrl = process.env.SUPABASE_URL;
+  const supabaseUrl = process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL || process.env.VITE_SUPABASE_URL;
+  const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_ANON_KEY || process.env.SUPABASE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || process.env.VITE_SUPABASE_ANON_KEY;
   const bucketName = process.env.SUPABASE_BUCKET_NAME || 'fvu-logs';
 
   try {
@@ -36,36 +37,39 @@ export default async function handler(req: any, res: any) {
         res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
         res.setHeader("Content-Type", "application/octet-stream");
         return res.status(200).send(fileBuffer);
-      } else {
+      } else if (supabaseKey) {
         // Fallback to authenticated fetch in case bucket is private
-        const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_ANON_KEY;
-        if (supabaseKey) {
-          const authResponse = await fetch(`${supabaseUrl}/storage/v1/object/authenticated/${bucketName}/${filename}`, {
-            headers: { 'Authorization': `Bearer ${supabaseKey}` }
-          });
-          if (authResponse.ok) {
-            const arrayBuffer = await authResponse.arrayBuffer();
-            const fileBuffer = Buffer.from(arrayBuffer);
-            res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
-            res.setHeader("Content-Type", "application/octet-stream");
-            return res.status(200).send(fileBuffer);
-          }
+        const authResponse = await fetch(`${supabaseUrl}/storage/v1/object/authenticated/${bucketName}/${filename}`, {
+          headers: { 'Authorization': `Bearer ${supabaseKey}` }
+        });
+        if (authResponse.ok) {
+          const arrayBuffer = await authResponse.arrayBuffer();
+          const fileBuffer = Buffer.from(arrayBuffer);
+          res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
+          res.setHeader("Content-Type", "application/octet-stream");
+          return res.status(200).send(fileBuffer);
         }
       }
     }
 
-    // Fallback: Check local temporary directory (for local dev / serverless session execution)
+    // Fallback: Check local temporary directories (for local dev / serverless session execution)
     const parts = filename.split('_');
     const sessionId = parts.length >= 2 ? parts[1].split('.')[0] : 'default';
-    const tempDir = path.resolve(os.tmpdir(), 'fastfvu', sessionId);
-    const localFilePath = path.join(tempDir, filename);
+    const candidatePaths = [
+      path.resolve(os.tmpdir(), 'fastfvu', sessionId, filename),
+      path.resolve(os.tmpdir(), filename),
+      path.resolve(process.cwd(), 'temp', sessionId, filename),
+      path.resolve(process.cwd(), filename)
+    ];
 
-    try {
-      const fileBuffer = await fs.readFile(localFilePath);
-      res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
-      res.setHeader("Content-Type", "application/octet-stream");
-      return res.status(200).send(fileBuffer);
-    } catch (localErr) {}
+    for (const cPath of candidatePaths) {
+      try {
+        const fileBuffer = await fs.readFile(cPath);
+        res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
+        res.setHeader("Content-Type", "application/octet-stream");
+        return res.status(200).send(fileBuffer);
+      } catch (e) {}
+    }
 
     return res.status(404).json({ error: "File not found in storage or temp cache." });
   } catch (error: any) {

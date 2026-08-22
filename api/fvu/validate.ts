@@ -41,6 +41,22 @@ export default async function handler(req: any, res: any) {
     let recordedOutputFile = result.success ? result.fvuFileName : result.errorFileName;
     const isSuccess = result.success;
 
+    // Prepare base64 / text content payload for fallback download
+    let fileContentBase64: string | null = null;
+    let rawTextContent: string | null = null;
+
+    if (isSuccess && result.fvuFileContent) {
+      if (Buffer.isBuffer(result.fvuFileContent)) {
+        fileContentBase64 = result.fvuFileContent.toString('base64');
+      } else if (typeof result.fvuFileContent === 'string') {
+        fileContentBase64 = Buffer.from(result.fvuFileContent, 'utf-8').toString('base64');
+        rawTextContent = result.fvuFileContent;
+      }
+    } else if (!isSuccess && result.errorContent) {
+      rawTextContent = result.errorContent;
+      fileContentBase64 = Buffer.from(result.errorContent, 'utf-8').toString('base64');
+    }
+
     // Upload true file contents to Supabase Storage
     let storageUrl: string | null = null;
     try {
@@ -57,6 +73,11 @@ export default async function handler(req: any, res: any) {
 
     const processingTimeMs = Date.now() - startTime;
 
+    // Construct data URI fallback if Supabase is unconfigured or failed
+    const dataUriFallback = fileContentBase64
+      ? `data:application/octet-stream;base64,${fileContentBase64}`
+      : null;
+
     const validationResult = {
       status: isSuccess ? "SUCCESS" : "FAILED",
       fvuVersion: result.fvuVersionUsed || "1.1",
@@ -64,7 +85,9 @@ export default async function handler(req: any, res: any) {
       errors: result.errors || [],
       fvuFileName: isSuccess ? result.fvuFileName : null,
       errorFileName: !isSuccess ? result.errorFileName : null,
-      downloadUrl: storageUrl || (recordedOutputFile ? `/api/v1/fvu/download?filename=${recordedOutputFile}` : null),
+      downloadUrl: storageUrl || dataUriFallback || (recordedOutputFile ? `/api/v1/fvu/download?filename=${recordedOutputFile}` : null),
+      fileContentBase64,
+      errorContent: !isSuccess ? rawTextContent : null,
       processingTimeMs,
       message: isSuccess 
         ? "Validated successfully by Local Java Engine." 
