@@ -412,23 +412,43 @@ app.post("/api/v1/fvu/generate", async (req, res) => {
 
 
 // Download FVU or Error file
-app.get("/api/v1/fvu/download/:filename", (req, res) => {
-  const filename = req.params.filename;
-  // Format: output_SESSIONID.fvu or error_SESSIONID.err
-  const parts = filename.split('_');
-  if (parts.length < 2) {
-    return res.status(400).send("Invalid filename format");
+app.get("/api/v1/fvu/download", async (req, res) => {
+  const filename = req.query.filename as string;
+  if (!filename) {
+    return res.status(400).send("Filename is required");
   }
-  const sessionId = parts[1].split('.')[0];
+
+  const supabaseUrl = process.env.SUPABASE_URL;
+  const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_ANON_KEY;
+  const bucketName = process.env.SUPABASE_BUCKET_NAME || 'fvu-logs';
+
+  if (supabaseUrl && supabaseKey) {
+    try {
+      const response = await fetch(`${supabaseUrl}/storage/v1/object/${bucketName}/${filename}`, {
+        headers: {
+          'Authorization': `Bearer ${supabaseKey}`
+        }
+      });
+      if (response.ok) {
+        res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
+        res.setHeader("Content-Type", "application/octet-stream");
+        const buffer = await response.arrayBuffer();
+        return res.status(200).send(Buffer.from(buffer));
+      }
+    } catch (err) {
+      console.warn("Supabase fetch failed, falling back to local temp:", err);
+    }
+  }
+
+  // Fallback to local temp directory (for Render execution)
+  const parts = filename.split('_');
+  const sessionId = parts.length >= 2 ? parts[1].split('.')[0] : 'default';
   const filePath = path.join(process.cwd(), 'temp', sessionId, filename);
   
-  const isErr = filename.endsWith('.err') || filename.endsWith('.txt');
-  const isHtml = filename.endsWith('.html');
-  const contentType = isErr ? 'text/plain' : isHtml ? 'text/html' : 'application/octet-stream';
-
   res.download(filePath, filename, {
     headers: {
-      'Content-Type': contentType
+      'Content-Type': 'application/octet-stream',
+      'Content-Disposition': `attachment; filename="${filename}"`
     }
   }, (err) => {
     if (err) {
