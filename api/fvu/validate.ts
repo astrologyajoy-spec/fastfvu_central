@@ -1,5 +1,5 @@
 import { pool } from '../_lib/db.js';
-import { executeFVU } from '../../src/lib/fvuEngine.js';
+import { generateNativeNodeFVU } from '../../src/lib/fvuEngine.js';
 import { uploadToSupabase } from '../../src/lib/storage.js';
 
 export default async function handler(req: any, res: any) {
@@ -34,159 +34,161 @@ export default async function handler(req: any, res: any) {
     }
 
     const startTime = Date.now();
+    const safeBaseName = fileName.replace(/[^a-zA-Z0-9._-]/g, '_').replace(/\.[^/.]+$/, "");
+    const expectedFvuFileName = `${safeBaseName}.fvu`;
+    const expectedErrFileName = `${safeBaseName}.err`;
+    const jobId = `${safeBaseName}_${startTime}`;
 
-    // Attempt local Java execution first
-    const result = await executeFVU(fileContent, fileName, csiFileContent, csiFileName);
-
-    // If local execution failed due to missing JRE or if GITHUB_PAT is set, trigger GitHub Actions workflow
-    const githubPat = process.env.GITHUB_PAT || process.env.GITHUB_TOKEN;
-    const githubRepo = process.env.GITHUB_REPO || process.env.GITHUB_REPOSITORY; // e.g. "owner/repo"
+    // GitHub PAT Tokens (Supports GITHUB_PAT_TOKEN, GITHUB_PAT, or GITHUB_TOKEN)
+    const githubPat = process.env.GITHUB_PAT_TOKEN || process.env.GITHUB_PAT || process.env.GITHUB_TOKEN;
+    const githubRepo = process.env.GITHUB_REPO || process.env.GITHUB_REPOSITORY || "astrologyajoy-spec/fastfvu_central";
 
     let dispatchedToGithub = false;
-    if ((!result.success && result.errors?.some(e => e.code === 'JRE_NOT_FOUND')) || (githubPat && githubRepo)) {
-      if (githubPat && githubRepo) {
-        try {
-          const dispatchRes = await fetch(`https://api.github.com/repos/${githubRepo}/dispatches`, {
-            method: "POST",
-            headers: {
-              "Accept": "application/vnd.github.v3+json",
-              "Authorization": `Bearer ${githubPat}`,
-              "Content-Type": "application/json",
-              "User-Agent": "FastFVU-Central-App"
-            },
-            body: JSON.stringify({
-              event_type: "fvu_validate",
-              client_payload: {
-                fileName,
-                fileContent,
-                csiFileName,
-                csiFileContent,
-                email,
-                jobId: startTime.toString()
-              }
-            })
-          });
 
-          if (dispatchRes.ok || dispatchRes.status === 204) {
-            dispatchedToGithub = true;
-            console.log(`[Validation] Successfully dispatched FVU validation to GitHub Actions (${githubRepo}).`);
-          } else {
-            const errText = await dispatchRes.text();
-            console.warn(`[Validation] GitHub Dispatch returned status ${dispatchRes.status}:`, errText);
-          }
-        } catch (ghErr) {
-          console.error("[Validation] Failed dispatching to GitHub Actions:", ghErr);
+    // Trigger GitHub Repository Dispatch Event (Bypassing Local Java on Vercel)
+    if (githubPat) {
+      try {
+        const dispatchUrl = `https://api.github.com/repos/${githubRepo}/dispatches`;
+        console.log(`[Validation API] Triggering GitHub Actions dispatch: ${dispatchUrl}`);
+
+        const dispatchRes = await fetch(dispatchUrl, {
+          method: "POST",
+          headers: {
+            "Accept": "application/vnd.github.v3+json",
+            "Authorization": `Bearer ${githubPat}`,
+            "Content-Type": "application/json",
+            "User-Agent": "FastFVU-Central-App"
+          },
+          body: JSON.stringify({
+            event_type: "fvu_validation",
+            client_payload: {
+              fileName,
+              fileContent,
+              csiFileName,
+              csiFileContent,
+              email,
+              jobId
+            }
+          })
+        });
+
+        if (dispatchRes.ok || dispatchRes.status === 204) {
+          dispatchedToGithub = true;
+          console.log(`[Validation API] Successfully dispatched FVU job to GitHub Actions (${githubRepo}).`);
+        } else {
+          const errText = await dispatchRes.text();
+          console.warn(`[Validation API] GitHub Dispatch returned status ${dispatchRes.status}:`, errText);
         }
+      } catch (ghErr: any) {
+        console.error("[Validation API] GitHub dispatch error:", ghErr?.message || ghErr);
       }
     }
 
-    let recordedOutputFile = result.success ? result.fvuFileName : result.errorFileName;
+    if (dispatchedToGithub) {
+      const responseData = {
+        status: "PENDING",
+        pending: true,
+        dispatchedToGithub: true,
+        jobId,
+        fileName,
+        fvuFileName: expectedFvuFileName,
+        errorFileName: expectedErrFileName,
+        processingTimeMs: Date.now() - startTime,
+        message: "Validation job dispatched to GitHub Actions runner (Java 17). Polling for output report..."
+      };
+
+      // Record to DB
+      try {
+        if (pool) {
+          const connection = await pool.getConnection();
+          try {
+            await connection.query(`
+              CREATE TABLE IF NOT EXISTS fvu_logs (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                user_id INT NULL,
+                api_key_id INT NULL,
+                filename VARCHAR(255) NOT NULL,
+                csi_filename VARCHAR(255) NULL,
+                output_filename VARCHAR(255) NULL,
+                status VARCHAR(50) NOT NULL,
+                processed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                error_details TEXT NULL
+              )
+            `);
+            const [users]: any = await connection.query("SELECT id FROM users WHERE email = ?", [email]);
+            const userId = (users && users.length > 0) ? users[0].id : null;
+            await connection.query(
+              "INSERT INTO fvu_logs (user_id, filename, csi_filename, output_filename, status, error_details) VALUES (?, ?, ?, ?, ?, ?)",
+              [userId, fileName, csiFileName || null, expectedFvuFileName, "PENDING", "Dispatched to GitHub Actions Runner"]
+            );
+          } finally {
+            connection.release();
+          }
+        }
+      } catch (dbErr: any) {
+        console.warn("DB log skipped:", dbErr?.message || dbErr);
+      }
+
+      return res.status(200).json(responseData);
+    }
+
+    // Fallback if GITHUB_PAT_TOKEN is not set: Run FastFVU Native JS Engine (Zero Java runtime dependency)
+    console.log("[Validation API] GITHUB_PAT_TOKEN not detected. Executing FastFVU Native Node Engine...");
+    const headerDetails = {
+      rpuSoftware: "FastFVU Central",
+      fileType: "TDS/TCS",
+      formType: "24Q/26Q",
+      tan: "",
+      rpuVersion: "1.1"
+    };
+
+    const result = generateNativeNodeFVU(fileContent, fileName, headerDetails, csiFileContent || undefined);
+    const recordedOutputFile = result.success ? result.fvuFileName : result.errorFileName;
     const isSuccess = result.success;
 
-    // Prepare base64 / text content payload for fallback download
     let fileContentBase64: string | null = null;
     let rawTextContent: string | null = null;
 
     if (isSuccess && result.fvuFileContent) {
-      if (Buffer.isBuffer(result.fvuFileContent)) {
-        fileContentBase64 = result.fvuFileContent.toString('base64');
-      } else if (typeof result.fvuFileContent === 'string') {
-        fileContentBase64 = Buffer.from(result.fvuFileContent, 'utf-8').toString('base64');
-        rawTextContent = result.fvuFileContent;
-      }
+      fileContentBase64 = Buffer.from(result.fvuFileContent).toString('base64');
     } else if (!isSuccess && result.errorContent) {
       rawTextContent = result.errorContent;
       fileContentBase64 = Buffer.from(result.errorContent, 'utf-8').toString('base64');
     }
 
-    // Upload true file contents to Supabase Storage
     let storageUrl: string | null = null;
     try {
       if (isSuccess && result.fvuFileContent && result.fvuFileName) {
         storageUrl = await uploadToSupabase(result.fvuFileName, result.fvuFileContent);
-        console.log(`[Validation] Uploaded successful FVU file ${result.fvuFileName} to Supabase: ${storageUrl || 'Skipped'}`);
       } else if (!isSuccess && result.errorContent && result.errorFileName) {
         storageUrl = await uploadToSupabase(result.errorFileName, result.errorContent);
-        console.log(`[Validation] Uploaded error log ${result.errorFileName} to Supabase: ${storageUrl || 'Skipped'}`);
       }
     } catch (uploadErr) {
-      console.error("[Validation] Supabase upload failed:", uploadErr);
+      console.warn("Supabase upload skipped:", uploadErr);
     }
 
-    const processingTimeMs = Date.now() - startTime;
+    const dataUriFallback = fileContentBase64 ? `data:application/octet-stream;base64,${fileContentBase64}` : null;
 
-    // Construct data URI fallback if Supabase is unconfigured or failed
-    const dataUriFallback = fileContentBase64
-      ? `data:application/octet-stream;base64,${fileContentBase64}`
-      : null;
-
-    const validationResult = {
+    return res.status(isSuccess ? 200 : 400).json({
       status: isSuccess ? "SUCCESS" : "FAILED",
-      fvuVersion: result.fvuVersionUsed || "1.1",
+      fvuVersion: "1.1",
       errorCount: result.errors?.length || 0,
       errors: result.errors || [],
       fvuFileName: isSuccess ? result.fvuFileName : null,
       errorFileName: !isSuccess ? result.errorFileName : null,
-      downloadUrl: storageUrl || dataUriFallback || (recordedOutputFile ? `/api/v1/fvu/download?filename=${recordedOutputFile}` : null),
+      downloadUrl: storageUrl || dataUriFallback || `/api/v1/fvu/download?filename=${recordedOutputFile}`,
       fileContentBase64,
       errorContent: !isSuccess ? rawTextContent : null,
-      dispatchedToGithub,
-      processingTimeMs,
+      dispatchedToGithub: false,
+      processingTimeMs: Date.now() - startTime,
       message: isSuccess 
-        ? "Validated successfully by Local Java Engine." 
-        : (dispatchedToGithub 
-            ? "FVU validation job triggered on GitHub Actions runner. Result will be uploaded to Supabase Storage."
-            : "FVU Validation failed. Please review the NSDL error report.")
-    };
-
-    // Database persistence
-    try {
-      if (pool) {
-        const connection = await pool.getConnection();
-        try {
-          await connection.query(`
-            CREATE TABLE IF NOT EXISTS fvu_logs (
-              id INT AUTO_INCREMENT PRIMARY KEY,
-              user_id INT NULL,
-              api_key_id INT NULL,
-              filename VARCHAR(255) NOT NULL,
-              csi_filename VARCHAR(255) NULL,
-              output_filename VARCHAR(255) NULL,
-              status VARCHAR(50) NOT NULL,
-              processed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-              error_details TEXT NULL
-            )
-          `);
-          const [users]: any = await connection.query("SELECT id FROM users WHERE email = ?", [email]);
-          const userId = (users && users.length > 0) ? users[0].id : null;
-          await connection.query(
-            "INSERT INTO fvu_logs (user_id, filename, csi_filename, output_filename, status, error_details) VALUES (?, ?, ?, ?, ?, ?)",
-            [
-              userId,
-              fileName,
-              csiFileName || null,
-              recordedOutputFile || null,
-              isSuccess ? "SUCCESS" : "FAILED",
-              isSuccess ? null : JSON.stringify(validationResult.errors || [])
-            ]
-          );
-        } finally {
-          connection.release();
-        }
-      }
-    } catch (dbErr: any) {
-      console.warn("Logging to database skipped gracefully:", dbErr?.message || dbErr);
-    }
-
-    if (!isSuccess) {
-      return res.status(400).json(validationResult);
-    }
-
-    return res.status(200).json(validationResult);
+        ? "Validated successfully by FastFVU NSDL Compliant Engine." 
+        : "Validation failed. Please review NSDL error report."
+    });
 
   } catch (err: any) {
-    const errorMsg = typeof err === 'string' ? err : (err?.message || 'Validation engine processing error');
-    console.error("Validation handler error:", errorMsg);
+    const errorMsg = typeof err === 'string' ? err : (err?.message || 'Validation processing error');
+    console.error("Validation error:", errorMsg);
     return res.status(200).json({ status: "FAILED", errors: [{ line: 1, code: "ERR_EXEC", message: errorMsg }] });
   }
 }

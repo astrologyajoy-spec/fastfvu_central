@@ -26,7 +26,7 @@ export function UserDashboard({ userSession, onSignOut }: UserDashboardProps) {
   const [uploadedFile, setUploadedFile] = useState<File | null>(null);
   const [uploadedCsiFile, setUploadedCsiFile] = useState<File | null>(null);
   const [validationResult, setValidationResult] = useState<{ 
-    status: 'SUCCESS' | 'FAILED'; 
+    status: 'SUCCESS' | 'FAILED' | 'PENDING'; 
     message: string; 
     fvuFileName?: string; 
     errorFileName?: string; 
@@ -166,6 +166,61 @@ export function UserDashboard({ userSession, onSignOut }: UserDashboardProps) {
     }
   };
 
+  const pollForFileCompletion = async (fvuFileName: string, errorFileName: string) => {
+    let attempts = 0;
+    const maxAttempts = 30; // 30 attempts * 3s = 90s max polling duration
+    
+    const interval = setInterval(async () => {
+      attempts++;
+      
+      // Attempt 1: Poll for generated .fvu file
+      try {
+        const response = await fetch(`${BACKEND_URL}/api/v1/fvu/download?filename=${encodeURIComponent(fvuFileName)}`);
+        if (response.ok) {
+          clearInterval(interval);
+          setValidationResult({
+            status: 'SUCCESS',
+            message: `Validated successfully by GitHub Actions Runner (Java 17)! File ready: ${fvuFileName}`,
+            fvuFileName: fvuFileName,
+            downloadUrl: `${BACKEND_URL}/api/v1/fvu/download?filename=${encodeURIComponent(fvuFileName)}`
+          });
+          setValidating(false);
+          fetchLogs();
+          return;
+        }
+      } catch (e) {}
+
+      // Attempt 2: Poll for generated .err file
+      try {
+        const response = await fetch(`${BACKEND_URL}/api/v1/fvu/download?filename=${encodeURIComponent(errorFileName)}`);
+        if (response.ok) {
+          clearInterval(interval);
+          setValidationResult({
+            status: 'FAILED',
+            message: `Validation complete with errors on GitHub Actions Runner. Error report ready: ${errorFileName}`,
+            errorFileName: errorFileName,
+            downloadUrl: `${BACKEND_URL}/api/v1/fvu/download?filename=${encodeURIComponent(errorFileName)}`
+          });
+          setValidating(false);
+          fetchLogs();
+          return;
+        }
+      } catch (e) {}
+
+      if (attempts >= maxAttempts) {
+        clearInterval(interval);
+        setValidationResult({
+          status: 'FAILED',
+          message: 'GitHub Actions validation runner is taking longer than expected. Please check your Recent Validations list below in a moment.',
+          fvuFileName,
+          errorFileName
+        });
+        setValidating(false);
+        fetchLogs();
+      }
+    }, 3000);
+  };
+
   const handleRunValidation = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!uploadedFile) return;
@@ -210,11 +265,27 @@ export function UserDashboard({ userSession, onSignOut }: UserDashboardProps) {
       } catch (parseErr) {
         data = { status: 'FAILED', errors: [{ line: 1, code: 'ERR_SRV', message: 'Unexpected server response' }] };
       }
+
+      // Check if job was dispatched to GitHub Actions workflow
+      if (data.status === 'PENDING' || data.dispatchedToGithub || data.pending) {
+        const fvuFileName = data.fvuFileName || uploadedFile.name.replace(/\.[^/.]+$/, "") + ".fvu";
+        const errorFileName = data.errorFileName || uploadedFile.name.replace(/\.[^/.]+$/, "") + ".err";
+
+        setValidationResult({
+          status: 'PENDING',
+          message: data.message || 'Job dispatched to GitHub Actions Java 17 Runner. Polling Supabase for generated report...',
+          fvuFileName,
+          errorFileName
+        });
+
+        pollForFileCompletion(fvuFileName, errorFileName);
+        return;
+      }
       
       if (!res.ok || data.status === 'FAILED') {
         setValidationResult({
           status: 'FAILED',
-          message: data.message || data.error || 'NSDL Java FVU Validation failed. Please review error report.',
+          message: data.message || data.error || 'NSDL FVU Validation failed. Please review error report.',
           errorFileName: data.errorFileName,
           errors: data.errors || [],
           downloadUrl: data.downloadUrl,
@@ -224,7 +295,7 @@ export function UserDashboard({ userSession, onSignOut }: UserDashboardProps) {
       } else {
         setValidationResult({
           status: 'SUCCESS',
-          message: data.message || 'Validated successfully by NSDL Standalone Java Engine.',
+          message: data.message || 'Validated successfully by FastFVU Engine.',
           fvuFileName: data.fvuFileName,
           downloadUrl: data.downloadUrl,
           fileContentBase64: data.fileContentBase64
@@ -427,17 +498,21 @@ export function UserDashboard({ userSession, onSignOut }: UserDashboardProps) {
                   <div className={`mt-4 p-4 rounded-xl border flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 animate-fadeIn ${
                     validationResult.status === 'SUCCESS' 
                       ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-600 dark:text-emerald-400' 
+                      : validationResult.status === 'PENDING'
+                      ? 'bg-blue-500/10 border-blue-500/30 text-blue-600 dark:text-blue-400'
                       : 'bg-red-500/10 border-red-500/30 text-red-600 dark:text-red-400'
                   }`}>
                     <div className="flex items-start space-x-3">
                       {validationResult.status === 'SUCCESS' ? (
                         <CheckCircle2 className="w-5 h-5 shrink-0 mt-0.5" />
+                      ) : validationResult.status === 'PENDING' ? (
+                        <RefreshCw className="w-5 h-5 shrink-0 mt-0.5 animate-spin" />
                       ) : (
                         <ShieldAlert className="w-5 h-5 shrink-0 mt-0.5" />
                       )}
                       <div>
                         <div className="font-semibold text-sm">
-                          {validationResult.status === 'SUCCESS' ? 'Validation Successful!' : 'Validation Failed'}
+                          {validationResult.status === 'SUCCESS' ? 'Validation Successful!' : validationResult.status === 'PENDING' ? 'Processing on GitHub Actions Java 17 Runner...' : 'Validation Failed'}
                         </div>
                         <div className="text-xs opacity-90">{validationResult.message}</div>
                       </div>

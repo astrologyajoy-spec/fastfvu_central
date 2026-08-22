@@ -1,4 +1,4 @@
-import { executeFVU } from "./src/lib/fvuEngine.js";
+import { executeFVU, generateNativeNodeFVU } from "./src/lib/fvuEngine.js";
 import { uploadToSupabase } from "./src/lib/storage.js";
 import express from "express";
 import path from "path";
@@ -261,28 +261,89 @@ app.post("/api/fvu/validate", async (req, res) => {
       csiFileName = null,
       csiFileContent = null
     } = req.body;
-    
-    // Call the Java execution engine
-    const fvuResult = await executeFVU(fileContent, fileName, csiFileContent || undefined, csiFileName || undefined);
+
+    const startTime = Date.now();
+    const safeBaseName = fileName.replace(/[^a-zA-Z0-9._-]/g, '_').replace(/\.[^/.]+$/, "");
+    const expectedFvuFileName = `${safeBaseName}.fvu`;
+    const expectedErrFileName = `${safeBaseName}.err`;
+    const jobId = `${safeBaseName}_${startTime}`;
+
+    const githubPat = process.env.GITHUB_PAT_TOKEN || process.env.GITHUB_PAT || process.env.GITHUB_TOKEN;
+    const githubRepo = process.env.GITHUB_REPO || process.env.GITHUB_REPOSITORY || "astrologyajoy-spec/fastfvu_central";
+
+    let dispatchedToGithub = false;
+
+    if (githubPat) {
+      try {
+        const dispatchUrl = `https://api.github.com/repos/${githubRepo}/dispatches`;
+        console.log(`[Express Validation] Dispatching to GitHub Actions: ${dispatchUrl}`);
+
+        const dispatchRes = await fetch(dispatchUrl, {
+          method: "POST",
+          headers: {
+            "Accept": "application/vnd.github.v3+json",
+            "Authorization": `Bearer ${githubPat}`,
+            "Content-Type": "application/json",
+            "User-Agent": "FastFVU-Central-App"
+          },
+          body: JSON.stringify({
+            event_type: "fvu_validation",
+            client_payload: {
+              fileName,
+              fileContent,
+              csiFileName,
+              csiFileContent,
+              email,
+              jobId
+            }
+          })
+        });
+
+        if (dispatchRes.ok || dispatchRes.status === 204) {
+          dispatchedToGithub = true;
+          console.log(`[Express Validation] Dispatched to GitHub Actions (${githubRepo}).`);
+        }
+      } catch (ghErr) {
+        console.error("[Express Validation] GitHub Dispatch error:", ghErr);
+      }
+    }
+
+    if (dispatchedToGithub) {
+      return res.json({
+        status: "PENDING",
+        pending: true,
+        dispatchedToGithub: true,
+        jobId,
+        fileName,
+        fvuFileName: expectedFvuFileName,
+        errorFileName: expectedErrFileName,
+        processingTimeMs: Date.now() - startTime,
+        message: "Validation job dispatched to GitHub Actions runner (Java 17). Polling for output report..."
+      });
+    }
+
+    // Fallback: Use FastFVU Native JS Engine (Zero Java calls)
+    const headerDetails = {
+      rpuSoftware: "FastFVU Central",
+      fileType: "TDS/TCS",
+      formType: "24Q/26Q",
+      tan: "",
+      rpuVersion: "1.1"
+    };
+
+    const fvuResult = generateNativeNodeFVU(fileContent, fileName, headerDetails, csiFileContent || undefined);
     const recordedOutputFile = fvuResult.success ? fvuResult.fvuFileName : fvuResult.errorFileName;
 
-    // Prepare base64 / text content payload for fallback download
     let fileContentBase64: string | null = null;
     let rawTextContent: string | null = null;
 
     if (fvuResult.success && fvuResult.fvuFileContent) {
-      if (Buffer.isBuffer(fvuResult.fvuFileContent)) {
-        fileContentBase64 = fvuResult.fvuFileContent.toString('base64');
-      } else if (typeof fvuResult.fvuFileContent === 'string') {
-        fileContentBase64 = Buffer.from(fvuResult.fvuFileContent, 'utf-8').toString('base64');
-        rawTextContent = fvuResult.fvuFileContent;
-      }
+      fileContentBase64 = Buffer.from(fvuResult.fvuFileContent).toString('base64');
     } else if (!fvuResult.success && fvuResult.errorContent) {
       rawTextContent = fvuResult.errorContent;
       fileContentBase64 = Buffer.from(fvuResult.errorContent, 'utf-8').toString('base64');
     }
 
-    // Upload logs/outputs to Supabase Storage Bucket
     let storageUrl: string | null = null;
     try {
       if (fvuResult.success && fvuResult.fvuFileName && fvuResult.fvuFileContent) {
@@ -300,26 +361,27 @@ app.post("/api/fvu/validate", async (req, res) => {
 
     const downloadUrl = storageUrl || dataUriFallback || (recordedOutputFile ? `/api/v1/fvu/download?filename=${recordedOutputFile}` : null);
 
-    const connection = await pool.getConnection();
     try {
-      // Find user id
-      const [users]: any = await connection.query("SELECT id FROM users WHERE email = ?", [email]);
-      const userId = (users && users.length > 0) ? users[0].id : null;
+      const connection = await pool.getConnection();
+      try {
+        const [users]: any = await connection.query("SELECT id FROM users WHERE email = ?", [email]);
+        const userId = (users && users.length > 0) ? users[0].id : null;
 
-      await connection.query(
-        "INSERT INTO fvu_logs (user_id, filename, csi_filename, output_filename, status, error_details) VALUES (?, ?, ?, ?, ?, ?)",
-        [
-          userId, 
-          fileName, 
-          csiFileName || null, 
-          recordedOutputFile || null, 
-          fvuResult.success ? "SUCCESS" : "FAILED", 
-          fvuResult.success ? null : JSON.stringify(fvuResult.errors)
-        ]
-      );
-    } finally {
-      connection.release();
-    }
+        await connection.query(
+          "INSERT INTO fvu_logs (user_id, filename, csi_filename, output_filename, status, error_details) VALUES (?, ?, ?, ?, ?, ?)",
+          [
+            userId, 
+            fileName, 
+            csiFileName || null, 
+            recordedOutputFile || null, 
+            fvuResult.success ? "SUCCESS" : "FAILED", 
+            fvuResult.success ? null : JSON.stringify(fvuResult.errors)
+          ]
+        );
+      } finally {
+        connection.release();
+      }
+    } catch (e) {}
 
     if (!fvuResult.success) {
       return res.status(400).json({
@@ -342,7 +404,7 @@ app.post("/api/fvu/validate", async (req, res) => {
       fvuFileName: fvuResult.fvuFileName,
       downloadUrl,
       fileContentBase64,
-      message: "Validated successfully by NSDL Java Standalone Engine."
+      message: "Validated successfully by FastFVU Engine."
     });
   } catch (err: any) {
     console.error("Validation error:", err);

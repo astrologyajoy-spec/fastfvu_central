@@ -2,7 +2,7 @@ name: FVU Validation Runner
 
 on:
   repository_dispatch:
-    types: [fvu_validate]
+    types: [fvu_validation, fvu_validate]
 
 jobs:
   validate:
@@ -29,9 +29,8 @@ jobs:
           CSI_FILE_NAME: ${{ github.event.client_payload.csiFileName }}
           CSI_FILE_CONTENT: ${{ github.event.client_payload.csiFileContent }}
           JOB_ID: ${{ github.event.client_payload.jobId }}
-          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
-          SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL || secrets.NEXT_PUBLIC_SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_ANON_KEY }}
           SUPABASE_BUCKET_NAME: ${{ secrets.SUPABASE_BUCKET_NAME || 'fvu-logs' }}
         run: |
           node -e '
@@ -53,8 +52,9 @@ jobs:
                 fs.writeFileSync(csiPath, process.env.CSI_FILE_CONTENT, "utf-8");
               }
 
-              const errFileName = fileName.replace(/\.[^/.]+$/, "") + ".err";
-              const fvuFileName = fileName.replace(/\.[^/.]+$/, "") + ".fvu";
+              const safeBaseName = fileName.replace(/[^a-zA-Z0-9._-]/g, "_").replace(/\.[^/.]+$/, "");
+              const errFileName = safeBaseName + ".err";
+              const fvuFileName = safeBaseName + ".fvu";
               const errPath = path.join(workDir, errFileName);
               const fvuPath = path.join(workDir, fvuFileName);
 
@@ -69,7 +69,7 @@ jobs:
               try {
                 execSync(cmd, { cwd: workDir, stdio: "inherit" });
               } catch (e) {
-                console.log("Java execution finished.");
+                console.log("Java execution completed.");
               }
 
               let targetFile = null;
@@ -90,19 +90,20 @@ jobs:
               }
 
               if (!targetFile) {
-                console.error("No output file generated.");
+                console.error("No output .fvu or .err file was generated.");
                 process.exit(1);
               }
 
-              console.log(`Generated output file: ${targetName}`);
+              console.log(`Generated report file: ${targetName}`);
 
               const supabaseUrl = process.env.SUPABASE_URL;
-              const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_ANON_KEY;
+              const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
               const bucketName = process.env.SUPABASE_BUCKET_NAME || "fvu-logs";
 
               if (supabaseUrl && supabaseKey) {
                 const fileBuffer = fs.readFileSync(targetFile);
                 const uploadUrl = `${supabaseUrl}/storage/v1/object/${bucketName}/${targetName}`;
+                console.log(`Uploading ${targetName} to Supabase: ${uploadUrl}`);
                 const res = await fetch(uploadUrl, {
                   method: "POST",
                   headers: {
@@ -112,14 +113,14 @@ jobs:
                   },
                   body: fileBuffer
                 });
-                console.log(`Uploaded to Supabase with status ${res.status}`);
+                console.log(`Uploaded to Supabase with HTTP status ${res.status}`);
               } else {
-                console.warn("Supabase credentials not available in environment.");
+                console.warn("Supabase credentials not configured in GitHub Secrets.");
               }
             }
 
             run().catch(err => {
-              console.error("Runner error:", err);
+              console.error("Runner failed:", err);
               process.exit(1);
             });
           '
