@@ -1,16 +1,7 @@
 import fs from 'fs';
 import path from 'path';
 import mysql from 'mysql2/promise';
-import { createRequire } from 'module';
-
-const require = createRequire(import.meta.url);
-
-let createClient;
-try {
-  createClient = require('@supabase/supabase-js').createClient;
-} catch (e) {
-  console.warn("Could not require @supabase/supabase-js directly, will fallback to HTTP REST where needed:", e.message);
-}
+import { createClient } from '@supabase/supabase-js';
 
 async function run() {
   console.log("=========================================================");
