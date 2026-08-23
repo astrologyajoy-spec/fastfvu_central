@@ -1,0 +1,171 @@
+name: FVU Validation Runner
+
+on:
+  repository_dispatch:
+    types: [fvu_validation, fvu_validate]
+  workflow_dispatch:
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install Node.js Dependencies
+        run: npm install
+
+      - name: Check Java Installation
+        id: check_java
+        run: |
+          echo "=== Step: Java Version Check ==="
+          java -version 2>&1 | tee java_version.log
+
+      - name: Check JAR File Existence
+        id: check_jar
+        run: |
+          echo "=== Step: Check JAR File Existence ==="
+          ls -la bin/ || true
+          ls -la fvu-tool/ || true
+          
+          JAR_PATH=""
+          if [ -f "bin/1TDS_STANDALONE_FVU_1.1.jar" ]; then
+            JAR_PATH="bin/1TDS_STANDALONE_FVU_1.1.jar"
+          elif [ -f "bin/TDS_FVU.jar" ]; then
+            JAR_PATH="bin/TDS_FVU.jar"
+          elif [ -f "bin/TDS_TCS_FVU.jar" ]; then
+            JAR_PATH="bin/TDS_TCS_FVU.jar"
+          elif [ -f "fvu-tool/TDS_TCS_FVU.jar" ]; then
+            JAR_PATH="fvu-tool/TDS_TCS_FVU.jar"
+          else
+            JAR_PATH=$(find bin fvu-tool . -name "*.jar" 2>/dev/null | head -n 1)
+          fi
+
+          if [ -z "$JAR_PATH" ] || [ ! -f "$JAR_PATH" ]; then
+            echo "ERROR: Java JAR file not found at path" | tee jar_check.log
+            echo "JAR_MISSING=true" >> $GITHUB_ENV
+            echo "JAR_PATH=" >> $GITHUB_ENV
+          else
+            echo "JAR file verified at path: $JAR_PATH" | tee jar_check.log
+            echo "JAR_MISSING=false" >> $GITHUB_ENV
+            echo "JAR_PATH=$JAR_PATH" >> $GITHUB_ENV
+          fi
+
+      - name: Inspect JAR & Manifest Entry Point
+        id: inspect_jar
+        run: |
+          echo "=== Step: Inspect JAR & Manifest Entry Point ==="
+          if [ "$JAR_MISSING" = "true" ] || [ -z "$JAR_PATH" ]; then
+            echo "Skipping manifest inspection because JAR is missing."
+          else
+            echo "Inspecting JAR File: $JAR_PATH"
+            ls -la "$JAR_PATH"
+            
+            echo "--- META-INF/MANIFEST.MF Content ---"
+            unzip -p "$JAR_PATH" META-INF/MANIFEST.MF 2>/dev/null || jar xf "$JAR_PATH" META-INF/MANIFEST.MF && cat META-INF/MANIFEST.MF || echo "Manifest read failed"
+            
+            MANIFEST_MAIN=$(unzip -p "$JAR_PATH" META-INF/MANIFEST.MF 2>/dev/null | grep -i "^Main-Class:" | awk '{print $2}' | tr -d '\r')
+            echo "Detected Manifest Main-Class: '$MANIFEST_MAIN'"
+            echo "MANIFEST_MAIN=$MANIFEST_MAIN" >> $GITHUB_ENV
+
+            echo "--- Scanning for Class Files containing FVU / TDS ---"
+            unzip -l "$JAR_PATH" 2>/dev/null | grep -E -i "FVU|TDS" | head -n 30 || true
+          fi
+
+      - name: Write Input Files to Disk
+        id: write_input
+        env:
+          FILE_NAME: ${{ github.event.client_payload.fileName }}
+          FILE_CONTENT: ${{ github.event.client_payload.fileContent }}
+          CSI_FILE_NAME: ${{ github.event.client_payload.csiFileName }}
+          CSI_FILE_CONTENT: ${{ github.event.client_payload.csiFileContent }}
+        run: |
+          echo "=== Step: Write Input Files ==="
+          mkdir -p tmp_job
+          FILE_NAME="${FILE_NAME:-statement.txt}"
+          echo "$FILE_CONTENT" > "tmp_job/$FILE_NAME"
+          echo "Input text file written successfully to disk: tmp_job/$FILE_NAME" | tee input_write.log
+
+          if [ -n "$CSI_FILE_CONTENT" ] && [ -n "$CSI_FILE_NAME" ]; then
+            echo "$CSI_FILE_CONTENT" > "tmp_job/$CSI_FILE_NAME"
+            echo "CSI file written successfully to disk: tmp_job/$CSI_FILE_NAME" >> input_write.log
+          fi
+
+      - name: Execute Java JAR & Capture Logs
+        id: run_java
+        env:
+          FILE_NAME: ${{ github.event.client_payload.fileName }}
+          CSI_FILE_NAME: ${{ github.event.client_payload.csiFileName }}
+          CSI_FILE_CONTENT: ${{ github.event.client_payload.csiFileContent }}
+        run: |
+          echo "=== Step: Execute Java JAR ==="
+          FILE_NAME="${FILE_NAME:-statement.txt}"
+          SAFE_BASE=$(echo "$FILE_NAME" | sed -e 's/[^a-zA-Z0-9._-]/_/g' -e 's/\.[^/.]*$//')
+          INPUT_PATH="tmp_job/$FILE_NAME"
+          ERR_PATH="tmp_job/${SAFE_BASE}.err"
+          FVU_PATH="tmp_job/${SAFE_BASE}.fvu"
+
+          CSI_PATH="0"
+          if [ -n "$CSI_FILE_CONTENT" ] && [ -n "$CSI_FILE_NAME" ]; then
+            CSI_PATH="tmp_job/$CSI_FILE_NAME"
+          fi
+
+          if [ "$JAR_MISSING" = "true" ]; then
+            echo "Skipping Java execution because JAR file is missing." > java_run.log
+            echo "JAVA_EXEC_FAILED" > status.txt
+          else
+            JAR_DIR=$(dirname "$JAR_PATH")
+            # Build Linux colon-separated classpath including directory jars
+            CP_STRING=$(find "$JAR_DIR" -name "*.jar" | tr '\n' ':')"."
+            
+            echo "Executing Java Validation..."
+            echo "Jar Path     : $JAR_PATH"
+            echo "Manifest Main: $MANIFEST_MAIN"
+            echo "Classpath    : $CP_STRING"
+
+            if [ -n "$MANIFEST_MAIN" ]; then
+              echo "Executing via Main-Class '$MANIFEST_MAIN':"
+              java -Dfile.encoding=UTF-8 -cp "$CP_STRING" "$MANIFEST_MAIN" "$INPUT_PATH" "$ERR_PATH" "$FVU_PATH" 0 "$CSI_PATH" 0 8.9 > java_run.log 2>&1 || {
+                echo "Classpath execution failed, falling back to '-jar':" >> java_run.log
+                java -Dfile.encoding=UTF-8 -jar "$JAR_PATH" "$INPUT_PATH" "$ERR_PATH" "$FVU_PATH" 0 "$CSI_PATH" 0 8.9 >> java_run.log 2>&1 || echo "JAVA_EXEC_FAILED" > status.txt
+              }
+            else
+              echo "Executing directly via '-jar':"
+              java -Dfile.encoding=UTF-8 -jar "$JAR_PATH" "$INPUT_PATH" "$ERR_PATH" "$FVU_PATH" 0 "$CSI_PATH" 0 8.9 > java_run.log 2>&1 || echo "JAVA_EXEC_FAILED" > status.txt
+            fi
+          fi
+
+      - name: Sync Results to Database & Supabase
+        if: always()
+        env:
+          FILE_NAME: ${{ github.event.client_payload.fileName }}
+          CSI_FILE_NAME: ${{ github.event.client_payload.csiFileName }}
+          EMAIL: ${{ github.event.client_payload.email }}
+          JOB_ID: ${{ github.event.client_payload.jobId }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL || secrets.NEXT_PUBLIC_SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_ANON_KEY }}
+          SUPABASE_BUCKET_NAME: ${{ secrets.SUPABASE_BUCKET_NAME || 'fvu-reports' }}
+          DB_HOST: ${{ secrets.DB_HOST || secrets.TIDB_HOST }}
+          DB_USER: ${{ secrets.DB_USER || secrets.TIDB_USER }}
+          DB_PASSWORD: ${{ secrets.DB_PASSWORD || secrets.TIDB_PASSWORD }}
+          DB_NAME: ${{ secrets.DB_NAME || secrets.TIDB_DATABASE }}
+          DB_PORT: ${{ secrets.DB_PORT || secrets.TIDB_PORT }}
+        run: |
+          echo "=== Step: Database & Storage Sync ==="
+          export JAVA_VERSION_LOG="$(cat java_version.log 2>/dev/null || echo 'Not available')"
+          export JAR_CHECK_LOG="$(cat jar_check.log 2>/dev/null || echo 'Not available')"
+          export INPUT_WRITE_LOG="$(cat input_write.log 2>/dev/null || echo 'Not available')"
+          export JAVA_RUN_LOG="$(cat java_run.log 2>/dev/null || echo 'No log produced')"
+          
+          node scripts/upload-result.js
