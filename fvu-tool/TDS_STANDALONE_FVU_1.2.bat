@@ -1,1 +1,0 @@
-start javaw -jar TDS_STANDALONE_FVU_1.2.jar
