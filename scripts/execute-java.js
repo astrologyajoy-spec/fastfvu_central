@@ -11,6 +11,7 @@ function run() {
   const fileName = process.env.FILE_NAME || 'statement.txt';
   const csiFileName = process.env.CSI_FILE_NAME || null;
   const jarMissing = process.env.JAR_MISSING === 'true';
+  const jarPath = process.env.JAR_PATH;
 
   const logFilePath = 'java_run.log';
   const statusFilePath = 'status.txt';
@@ -20,9 +21,9 @@ function run() {
     fs.appendFileSync(logFilePath, msg + '\n');
   };
 
-  fs.writeFileSync(logFilePath, ''); // Log Clear
+  fs.writeFileSync(logFilePath, ''); // Clear existing log
 
-  if (jarMissing) {
+  if (jarMissing || !jarPath) {
     appendLog("Skipping Java execution because JAR file is missing.");
     fs.writeFileSync(statusFilePath, "JAVA_EXEC_FAILED");
     process.exit(0);
@@ -58,12 +59,14 @@ function run() {
   }
 
   console.log("\n--- 2. SELECTING BEST MATCHING JAR ENGINE ---");
-  const jarDir = path.join(process.cwd(), 'fvu-tool');
+  const jarDir = path.dirname(jarPath);
+  
+  // TDS_TCS_FVU.jar এবং 1TDS_STANDALONE_FVU_1.1.jar সম্পূর্ণ বাদ দিয়ে কেবল সঠিক ১.২ jar পয়েন্ট করা
   const selectedMainJar = path.join(jarDir, 'TDS_STANDALONE_FVU_1.2.jar');
 
-  appendLog(`[INFO] Primary JAR Engine: ${selectedMainJar}`);
+  appendLog(`[INFO] Selected primary JAR Engine: ${selectedMainJar}`);
 
-  // Classpath Configuration
+  // Classpath তৈরি করা
   let cpString = '';
   try {
     const files = fs.readdirSync(jarDir);
@@ -77,6 +80,16 @@ function run() {
   }
 
   appendLog(`[INFO] Computed Classpath: ${cpString}`);
+
+  // Base Arguments: <input> <err> <fvu> <0> <csi> <0>
+  const baseArgs = [
+    `"${inputPath}"`,
+    `"${errPath}"`,
+    `"${fvuPath}"`,
+    '0',
+    csiPath !== '0' ? `"${csiPath}"` : '0',
+    '0'
+  ];
 
   console.log("\n--- 3. EXECUTING JAVA ENGINE WITH VERSION FALLBACKS ---");
 
@@ -106,7 +119,7 @@ function run() {
       try {
         const errContent = fs.readFileSync(errPath, 'utf8');
         if (errContent.includes("Incorrect FVU Version of JAR")) {
-          appendLog(`[WARN] Returned "Incorrect FVU Version of JAR" - Trying next signature...`);
+          appendLog(`[WARN] Returned "Incorrect FVU Version of JAR" - Retrying with next combination...`);
           fs.unlinkSync(errPath);
           return { success: false, isVersionErr: true };
         }
@@ -126,27 +139,37 @@ function run() {
     return { success: false };
   };
 
-  const argInput = `"${inputPath}"`;
-  const argErr = `"${errPath}"`;
-  const argFvu = `"${fvuPath}"`;
-  const argCsi = csiPath !== '0' ? `"${csiPath}"` : '0';
+  // Attempt 1: Standalone Standard Format with Flag (7th & 8th Args) -> 1 8.9
+  let res = tryExecute(`java -Dfile.encoding=UTF-8 -cp "${cpString}" com.tin.FVU.FVU ${baseArgs.join(' ')} 1 8.9`);
 
-  // Combination 1: Standalone Standard Sign (Input, Err, Fvu, 0, CSI, 0, 1, 8.9)
-  let res = tryExecute(`java -Dfile.encoding=UTF-8 -cp "${cpString}" com.tin.FVU.FVU ${argInput} ${argErr} ${argFvu} 0 ${argCsi} 0 1 8.9`);
-
-  // Combination 2: Standalone Flag Override (Input, Err, Fvu, 0, CSI, 0, 0, 1.2)
+  // Attempt 2: Standalone Format -> 0 1.2
   if (!res.success) {
-    res = tryExecute(`java -Dfile.encoding=UTF-8 -cp "${cpString}" com.tin.FVU.FVU ${argInput} ${argErr} ${argFvu} 0 ${argCsi} 0 0 1.2`);
+    res = tryExecute(`java -Dfile.encoding=UTF-8 -cp "${cpString}" com.tin.FVU.FVU ${baseArgs.join(' ')} 0 1.2`);
   }
 
-  // Combination 3: Standalone Flag Override (Input, Err, Fvu, 0, CSI, 0, 1, 1.2)
+  // Attempt 3: Standalone Format -> 1 1.2
   if (!res.success) {
-    res = tryExecute(`java -Dfile.encoding=UTF-8 -cp "${cpString}" com.tin.FVU.FVU ${argInput} ${argErr} ${argFvu} 0 ${argCsi} 0 1 1.2`);
+    res = tryExecute(`java -Dfile.encoding=UTF-8 -cp "${cpString}" com.tin.FVU.FVU ${baseArgs.join(' ')} 1 1.2`);
   }
 
-  // Combination 4: Standalone Legacy (Input, Err, Fvu, 0, CSI, 0, 8.9)
+  // Attempt 4: Standalone Legacy Single Flag -> 8.9
   if (!res.success) {
-    res = tryExecute(`java -Dfile.encoding=UTF-8 -cp "${cpString}" com.tin.FVU.FVU ${argInput} ${argErr} ${argFvu} 0 ${argCsi} 0 8.9`);
+    res = tryExecute(`java -Dfile.encoding=UTF-8 -cp "${cpString}" com.tin.FVU.FVU ${baseArgs.join(' ')} 8.9`);
+  }
+
+  // Attempt 5: Standalone Legacy Single Flag -> 1.2
+  if (!res.success) {
+    res = tryExecute(`java -Dfile.encoding=UTF-8 -cp "${cpString}" com.tin.FVU.FVU ${baseArgs.join(' ')} 1.2`);
+  }
+
+  // Attempt 6: No extra flag
+  if (!res.success) {
+    res = tryExecute(`java -Dfile.encoding=UTF-8 -cp "${cpString}" com.tin.FVU.FVU ${baseArgs.join(' ')}`);
+  }
+
+  // Attempt 7: Direct -jar Execution
+  if (!res.success) {
+    res = tryExecute(`java -Dfile.encoding=UTF-8 -jar "${selectedMainJar}" ${baseArgs.join(' ')} 1 8.9`);
   }
 
   if (!res.success) {
