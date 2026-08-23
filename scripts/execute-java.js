@@ -12,6 +12,7 @@ function run() {
   const csiFileName = process.env.CSI_FILE_NAME || null;
   const jarMissing = process.env.JAR_MISSING === 'true';
   const jarPath = process.env.JAR_PATH;
+  const manifestMain = process.env.MANIFEST_MAIN || 'com.tin.FVU.FVU'; // Fallback
 
   const logFilePath = 'java_run.log';
   const statusFilePath = 'status.txt';
@@ -58,42 +59,46 @@ function run() {
     appendLog(`[INFO] No CSI file provided (using '0').`);
   }
 
-  console.log("\n--- 2. SELECTING BEST MATCHING JAR ENGINE ---");
+  console.log("\n--- 2. JAR PATH & CLASSPATH RESOLUTION ---");
   const jarDir = path.dirname(jarPath);
   
-  // TDS_TCS_FVU.jar এবং 1TDS_STANDALONE_FVU_1.1.jar বাদ দিয়ে কেবল ১.২ jar নির্বাচন
-  const selectedMainJar = path.join(jarDir, 'TDS_STANDALONE_FVU_1.2.jar');
+  appendLog(`[INFO] Primary JAR: ${jarPath}`);
+  appendLog(`[INFO] Manifest Main-Class detected as: ${manifestMain}`);
 
-  appendLog(`[INFO] Selected primary JAR Engine: ${selectedMainJar}`);
-
-  // Classpath তৈরি করা
+  // Build full classpath
   let cpString = '';
   try {
     const files = fs.readdirSync(jarDir);
     const otherJars = files
-      .filter(f => f.endsWith('.jar') && !f.includes('TDS_TCS_FVU.jar') && !f.includes('1TDS_STANDALONE_FVU_1.1.jar') && path.join(jarDir, f) !== selectedMainJar)
+      .filter(f => f.endsWith('.jar') && path.join(jarDir, f) !== jarPath)
       .map(f => path.join(jarDir, f));
     
-    cpString = [selectedMainJar, ...otherJars].join(':') + ':.';
+    cpString = [jarPath, ...otherJars].join(':') + ':.';
   } catch (err) {
-    cpString = selectedMainJar;
+    cpString = jarPath;
   }
 
   appendLog(`[INFO] Computed Classpath: ${cpString}`);
 
-  // Base Arguments format: <inputPath> <errPath> <fvuPath> <0> <csiPath>
-  const formattedCsiPath = csiPath !== '0' ? `"${csiPath}"` : '0';
+  // Base Arguments: <input> <err> <fvu> <0> <csi> <0>
+  const baseArgs = [
+    `"${inputPath}"`,
+    `"${errPath}"`,
+    `"${fvuPath}"`,
+    '0',
+    csiPath !== '0' ? `"${csiPath}"` : '0',
+    '0'
+  ];
 
   console.log("\n--- 3. EXECUTING JAVA ENGINE WITH VERSION FALLBACKS ---");
 
   const tryExecute = (cmd) => {
     appendLog(`\n[EXEC_CMD] ${cmd}`);
-    
-    // পুরানো টেস্ট ট্রেইল ফাইল থাকলে মুছে ফেলা
-    if (fs.existsSync(fvuPath)) fs.unlinkSync(fvuPath);
-    if (fs.existsSync(errPath)) fs.unlinkSync(errPath);
-
     try {
+      // Clean up previous attempts to avoid false positives
+      if (fs.existsSync(errPath)) fs.unlinkSync(errPath);
+      if (fs.existsSync(fvuPath)) fs.unlinkSync(fvuPath);
+
       const output = execSync(cmd, { 
         stdio: 'pipe', 
         timeout: 180000, 
@@ -103,9 +108,9 @@ function run() {
         appendLog(output.toString('utf8'));
       }
     } catch (err) {
-      appendLog(`Execution Output/Note: ${err.message}`);
-      if (err.stdout) appendLog(`--- STDOUT ---\n${err.stdout.toString('utf8')}`);
-      if (err.stderr) appendLog(`--- STDERR ---\n${err.stderr.toString('utf8')}`);
+      appendLog(`Execution Output/Note: Command failed.`);
+      if (err.stdout && err.stdout.length > 0) appendLog(`--- STDOUT ---\n${err.stdout.toString('utf8')}`);
+      if (err.stderr && err.stderr.length > 0) appendLog(`--- STDERR ---\n${err.stderr.toString('utf8')}`);
     }
 
     const fvuCreated = fs.existsSync(fvuPath);
@@ -116,10 +121,8 @@ function run() {
     if (errCreated) {
       try {
         const errContent = fs.readFileSync(errPath, 'utf8');
-        // যদি "Incorrect FVU Version of JAR" আসে, তার মানে আর্গুমেন্ট ফরম্যাটে ভুল আছে
-        if (errContent.includes("Incorrect FVU Version of JAR")) {
-          appendLog(`[WARN] Returned "Incorrect FVU Version of JAR" - Retrying next signature...`);
-          fs.unlinkSync(errPath); // ফলস এরর ফাইল মুছে ফেলা হলো
+        if (errContent.includes("Incorrect FVU Version of JAR") || errContent.includes("Invalid Version")) {
+          appendLog(`[WARN] Returned "Incorrect FVU Version of JAR" - Retrying with next signature...`);
           return { success: false, isVersionErr: true };
         }
       } catch (e) {}
@@ -130,7 +133,6 @@ function run() {
       fs.writeFileSync(statusFilePath, "JAVA_EXEC_SUCCESS");
       return { success: true };
     } else if (errCreated) {
-      // যদি ফাইলের ডাটাবেজ/ফরম্যাটে সত্যি কোনো এরর থাকে (যেমন Line 1 error)
       appendLog(`[STAGE: JAVA_EXECUTION_SUCCESS] .err File Generated (Valid Validation Error).`);
       fs.writeFileSync(statusFilePath, "JAVA_EXEC_SUCCESS");
       return { success: true };
@@ -139,22 +141,33 @@ function run() {
     return { success: false };
   };
 
-  // Attempt 1: Standalone FVU 1.2 এর জন্য স্ট্যান্ডার্ড আর্গুমেন্ট সাইকেল (6 parameters)
-  let res = tryExecute(`java -Dfile.encoding=UTF-8 -cp "${cpString}" com.tin.FVU.FVU "${inputPath}" "${errPath}" "${fvuPath}" 0 ${formattedCsiPath} 0`);
+  // We loop over combinations of known version flags that Protean/NSDL use.
+  // The JAR throws "Incorrect FVU Version" if the 7th argument doesn't match its internal hardcoded version.
+  const versionsToTry = ['1.2', '8.9', '9.0', '8.8', '8.7', '1.1', '1.0', ''];
+  const classesToTry = [manifestMain, 'com.tin.FVU.FVU', 'com.mbridge.fvu.TDSFVU'];
+  let res = { success: false };
 
-  // Attempt 2: 7টি আর্গুমেন্ট ফরম্যাট (7th arg = "1")
-  if (!res.success) {
-    res = tryExecute(`java -Dfile.encoding=UTF-8 -cp "${cpString}" com.tin.FVU.FVU "${inputPath}" "${errPath}" "${fvuPath}" 0 ${formattedCsiPath} 0 1`);
+  // Phase 1: Try with Classpath + Main Classes
+  for (const className of classesToTry) {
+    if (!className || className.trim() === '') continue;
+    
+    appendLog(`\n[INFO] Trying Class: ${className}`);
+    for (const ver of versionsToTry) {
+      const vArg = ver ? ` ${ver}` : '';
+      res = tryExecute(`java -Dfile.encoding=UTF-8 -cp "${cpString}" ${className} ${baseArgs.join(' ')}${vArg}`);
+      if (res.success) break;
+    }
+    if (res.success) break;
   }
 
-  // Attempt 3: RPU Core Main-Class কল করা (com.tin.FVU.FVUMain)
+  // Phase 2: Try Direct -jar Execution (Fallback)
   if (!res.success) {
-    res = tryExecute(`java -Dfile.encoding=UTF-8 -cp "${cpString}" com.tin.FVU.FVUMain "${inputPath}" "${errPath}" "${fvuPath}" 0 ${formattedCsiPath} 0`);
-  }
-
-  // Attempt 4: Direct JAR Execution
-  if (!res.success) {
-    res = tryExecute(`java -Dfile.encoding=UTF-8 -jar "${selectedMainJar}" "${inputPath}" "${errPath}" "${fvuPath}" 0 ${formattedCsiPath} 0`);
+    appendLog(`\n[INFO] Trying Direct -jar Execution...`);
+    for (const ver of versionsToTry) {
+      const vArg = ver ? ` ${ver}` : '';
+      res = tryExecute(`java -Dfile.encoding=UTF-8 -jar "${jarPath}" ${baseArgs.join(' ')}${vArg}`);
+      if (res.success) break;
+    }
   }
 
   if (!res.success) {
