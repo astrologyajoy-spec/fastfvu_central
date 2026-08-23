@@ -61,10 +61,9 @@ function run() {
   console.log("\n--- 2. SELECTING BEST MATCHING JAR ENGINE ---");
   const jarDir = path.dirname(jarPath);
   
-  // NSDL Standalone JAR 우선순위 설정
+  // 1TDS_STANDALONE_FVU_1.1.jar সম্পূর্ণ বাদ দেওয়া হয়েছে
   const jarCandidates = [
     path.join(jarDir, 'TDS_STANDALONE_FVU_1.2.jar'),
-    path.join(jarDir, '1TDS_STANDALONE_FVU_1.1.jar'),
     path.join(jarDir, 'TDS_TCS_FVU.jar'),
     jarPath
   ];
@@ -87,7 +86,6 @@ function run() {
       .filter(f => f.endsWith('.jar') && path.join(jarDir, f) !== selectedMainJar)
       .map(f => path.join(jarDir, f));
     
-    // Primary JAR টি Classpath এর একদম প্রথমে থাকবে
     cpString = [selectedMainJar, ...otherJars].join(':') + ':.';
   } catch (err) {
     cpString = selectedMainJar;
@@ -95,6 +93,7 @@ function run() {
 
   appendLog(`[INFO] Computed Classpath: ${cpString}`);
 
+  // Base Arguments: <input> <err> <fvu> <0> <csi> <0>
   const baseArgs = [
     `"${inputPath}"`,
     `"${errPath}"`,
@@ -104,7 +103,7 @@ function run() {
     '0'
   ];
 
-  console.log("\n--- 3. EXECUTING JAVA ENGINE WITH FALLBACK STRATEGIES ---");
+  console.log("\n--- 3. EXECUTING JAVA ENGINE WITH VERSION FALLBACKS ---");
 
   const tryExecute = (cmd) => {
     appendLog(`\n[EXEC_CMD] ${cmd}`);
@@ -132,10 +131,9 @@ function run() {
       try {
         const errContent = fs.readFileSync(errPath, 'utf8');
         if (errContent.includes("Incorrect FVU Version of JAR")) {
-          appendLog(`[WARN] Returned "Incorrect FVU Version of JAR" - Retrying with different mode...`);
-          // Delete faulty err file so we can retry cleanly
-          fs.unlinkSync(errPath);
-          return { success: false, retryNeeded: true };
+          appendLog(`[WARN] Returned "Incorrect FVU Version of JAR" - Retrying with version flag...`);
+          fs.unlinkSync(errPath); // ট্রাই করার আগে ফাল্টি এরর ফাইল ডিলিট
+          return { success: false, isVersionErr: true };
         }
       } catch (e) {}
     }
@@ -150,25 +148,25 @@ function run() {
       return { success: true };
     }
 
-    return { success: false, retryNeeded: false };
+    return { success: false };
   };
 
-  // Attempt 1: Standalone Main Class with 6 Arguments
-  let res = tryExecute(`java -Dfile.encoding=UTF-8 -cp "${cpString}" com.tin.FVU.FVU ${baseArgs.join(' ')}`);
+  // Attempt 1: Protean RPU 1.2 এর জন্য ৭ম আর্গুমেন্ট '1.2' পাস করা
+  let res = tryExecute(`java -Dfile.encoding=UTF-8 -cp "${cpString}" com.tin.FVU.FVU ${baseArgs.join(' ')} 1.2`);
 
-  // Attempt 2: Standalone Main Class with '8.9' version parameter
+  // Attempt 2: Protean RPU এর বিকল্প ভার্সন ফ্ল্যাগ '8.9' পাস করা
   if (!res.success) {
     res = tryExecute(`java -Dfile.encoding=UTF-8 -cp "${cpString}" com.tin.FVU.FVU ${baseArgs.join(' ')} 8.9`);
   }
 
-  // Attempt 3: Fallback using -jar direct execution
+  // Attempt 3: কোনো ভার্সন ফ্ল্যাগ ছাড়া ডিফল্ট ট্রাই করা
   if (!res.success) {
-    res = tryExecute(`java -Dfile.encoding=UTF-8 -jar "${selectedMainJar}" ${baseArgs.join(' ')}`);
+    res = tryExecute(`java -Dfile.encoding=UTF-8 -cp "${cpString}" com.tin.FVU.FVU ${baseArgs.join(' ')}`);
   }
 
-  // Attempt 4: Fallback using -jar with '8.9'
+  // Attempt 4: Direct -jar মোডে এক্সিকিউট করা
   if (!res.success) {
-    res = tryExecute(`java -Dfile.encoding=UTF-8 -jar "${selectedMainJar}" ${baseArgs.join(' ')} 8.9`);
+    res = tryExecute(`java -Dfile.encoding=UTF-8 -jar "${selectedMainJar}" ${baseArgs.join(' ')} 1.2`);
   }
 
   if (!res.success) {
