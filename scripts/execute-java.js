@@ -61,29 +61,17 @@ function run() {
   console.log("\n--- 2. SELECTING BEST MATCHING JAR ENGINE ---");
   const jarDir = path.dirname(jarPath);
   
-  // 1TDS_STANDALONE_FVU_1.1.jar সম্পূর্ণ বাদ দেওয়া হয়েছে
-  const jarCandidates = [
-    path.join(jarDir, 'TDS_STANDALONE_FVU_1.2.jar'),
-    path.join(jarDir, 'TDS_TCS_FVU.jar'),
-    jarPath
-  ];
-
-  let selectedMainJar = jarPath;
-  for (const cand of jarCandidates) {
-    if (fs.existsSync(cand)) {
-      selectedMainJar = cand;
-      break;
-    }
-  }
+  // TDS_TCS_FVU.jar এবং 1TDS_STANDALONE_FVU_1.1.jar সম্পূর্ণ বাদ দিয়ে কেবল সঠিক ১.২ jar চেক
+  const selectedMainJar = path.join(jarDir, 'TDS_STANDALONE_FVU_1.2.jar');
 
   appendLog(`[INFO] Selected primary JAR Engine: ${selectedMainJar}`);
 
-  // Classpath তৈরি করা
+  // Classpath তৈরি করা (এখানে TDS_TCS_FVU.jar ফাইলকে এক্সক্লুড/বাদ দেওয়া হয়েছে)
   let cpString = '';
   try {
     const files = fs.readdirSync(jarDir);
     const otherJars = files
-      .filter(f => f.endsWith('.jar') && path.join(jarDir, f) !== selectedMainJar)
+      .filter(f => f.endsWith('.jar') && !f.includes('TDS_TCS_FVU.jar') && !f.includes('1TDS_STANDALONE_FVU_1.1.jar') && path.join(jarDir, f) !== selectedMainJar)
       .map(f => path.join(jarDir, f));
     
     cpString = [selectedMainJar, ...otherJars].join(':') + ':.';
