@@ -12,7 +12,6 @@ function run() {
   const csiFileName = process.env.CSI_FILE_NAME || null;
   const jarMissing = process.env.JAR_MISSING === 'true';
   const jarPath = process.env.JAR_PATH;
-  const manifestMain = process.env.MANIFEST_MAIN || 'com.tin.FVU.FVU'; // Fallback
 
   const logFilePath = 'java_run.log';
   const statusFilePath = 'status.txt';
@@ -59,26 +58,8 @@ function run() {
     appendLog(`[INFO] No CSI file provided (using '0').`);
   }
 
-  console.log("\n--- 2. JAR PATH & CLASSPATH RESOLUTION ---");
-  const jarDir = path.dirname(jarPath);
-  
+  console.log("\n--- 2. JAR ENGINE PREPARATION ---");
   appendLog(`[INFO] Primary JAR: ${jarPath}`);
-  appendLog(`[INFO] Manifest Main-Class detected as: ${manifestMain}`);
-
-  // Build full classpath
-  let cpString = '';
-  try {
-    const files = fs.readdirSync(jarDir);
-    const otherJars = files
-      .filter(f => f.endsWith('.jar') && path.join(jarDir, f) !== jarPath)
-      .map(f => path.join(jarDir, f));
-    
-    cpString = [jarPath, ...otherJars].join(':') + ':.';
-  } catch (err) {
-    cpString = jarPath;
-  }
-
-  appendLog(`[INFO] Computed Classpath: ${cpString}`);
 
   // Base Arguments: <input> <err> <fvu> <0> <csi> <0>
   const baseArgs = [
@@ -90,7 +71,7 @@ function run() {
     '0'
   ];
 
-  console.log("\n--- 3. EXECUTING JAVA ENGINE WITH VERSION FALLBACKS ---");
+  console.log("\n--- 3. EXECUTING JAVA ENGINE ---");
 
   const tryExecute = (cmd) => {
     appendLog(`\n[EXEC_CMD] ${cmd}`);
@@ -108,7 +89,7 @@ function run() {
         appendLog(output.toString('utf8'));
       }
     } catch (err) {
-      appendLog(`Execution Output/Note: Command failed.`);
+      appendLog(`Execution Output/Note: Command execution finished/failed.`);
       if (err.stdout && err.stdout.length > 0) appendLog(`--- STDOUT ---\n${err.stdout.toString('utf8')}`);
       if (err.stderr && err.stderr.length > 0) appendLog(`--- STDERR ---\n${err.stderr.toString('utf8')}`);
     }
@@ -122,7 +103,7 @@ function run() {
       try {
         const errContent = fs.readFileSync(errPath, 'utf8');
         if (errContent.includes("Incorrect FVU Version of JAR") || errContent.includes("Invalid Version")) {
-          appendLog(`[WARN] Returned "Incorrect FVU Version of JAR" - Retrying with next signature...`);
+          appendLog(`[WARN] Returned "Incorrect FVU Version of JAR".`);
           return { success: false, isVersionErr: true };
         }
       } catch (e) {}
@@ -141,31 +122,34 @@ function run() {
     return { success: false };
   };
 
-  // We loop over combinations of known version flags that Protean/NSDL use.
-  // The JAR throws "Incorrect FVU Version" if the 7th argument doesn't match its internal hardcoded version.
-  const versionsToTry = ['1.2', '8.9', '9.0', '8.8', '8.7', '1.1', '1.0', ''];
-  const classesToTry = [manifestMain, 'com.tin.FVU.FVU', 'com.mbridge.fvu.TDSFVU'];
+  // Phase 1: Pure -jar Execution (Safe from Classpath Pollution)
+  const versionsToTry = ['1.2', '', '8.9', '1'];
   let res = { success: false };
 
-  // Phase 1: Try with Classpath + Main Classes
-  for (const className of classesToTry) {
-    if (!className || className.trim() === '') continue;
-    
-    appendLog(`\n[INFO] Trying Class: ${className}`);
-    for (const ver of versionsToTry) {
-      const vArg = ver ? ` ${ver}` : '';
-      res = tryExecute(`java -Dfile.encoding=UTF-8 -cp "${cpString}" ${className} ${baseArgs.join(' ')}${vArg}`);
-      if (res.success) break;
-    }
+  appendLog(`\n[INFO] Starting Clean Execution via -jar...`);
+  for (const ver of versionsToTry) {
+    const vArg = ver ? ` ${ver}` : '';
+    res = tryExecute(`java -Dfile.encoding=UTF-8 -jar "${jarPath}" ${baseArgs.join(' ')}${vArg}`);
     if (res.success) break;
   }
 
-  // Phase 2: Try Direct -jar Execution (Fallback)
+  // Phase 2: Restricted Classpath Execution (Explicitly blocking VersionValidator.jar)
   if (!res.success) {
-    appendLog(`\n[INFO] Trying Direct -jar Execution...`);
+    appendLog(`\n[INFO] -jar failed, trying clean classpath execution...`);
+    const jarDir = path.dirname(jarPath);
+    let cpString = jarPath;
+    try {
+      const files = fs.readdirSync(jarDir);
+      const safeJars = files
+        .filter(f => f.endsWith('.jar') && path.join(jarDir, f) !== jarPath && !f.includes('VersionValidator.jar') && !f.includes('TDS_TCS_FVU.jar'))
+        .map(f => path.join(jarDir, f));
+      cpString = [jarPath, ...safeJars].join(':') + ':.';
+    } catch (e) {}
+
+    const mainClass = process.env.MANIFEST_MAIN || 'com.tin.FVU.FVU';
     for (const ver of versionsToTry) {
       const vArg = ver ? ` ${ver}` : '';
-      res = tryExecute(`java -Dfile.encoding=UTF-8 -jar "${jarPath}" ${baseArgs.join(' ')}${vArg}`);
+      res = tryExecute(`java -Dfile.encoding=UTF-8 -cp "${cpString}" ${mainClass} ${baseArgs.join(' ')}${vArg}`);
       if (res.success) break;
     }
   }
