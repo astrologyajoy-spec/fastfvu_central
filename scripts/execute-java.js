@@ -61,7 +61,7 @@ function run() {
   console.log("\n--- 2. SELECTING BEST MATCHING JAR ENGINE ---");
   const jarDir = path.dirname(jarPath);
   
-  // TDS_TCS_FVU.jar এবং 1TDS_STANDALONE_FVU_1.1.jar সম্পূর্ণ বাদ দিয়ে কেবল সঠিক ১.২ jar পয়েন্ট করা
+  // TDS_TCS_FVU.jar এবং 1TDS_STANDALONE_FVU_1.1.jar বাদ দিয়ে কেবল ১.২ jar নির্বাচন
   const selectedMainJar = path.join(jarDir, 'TDS_STANDALONE_FVU_1.2.jar');
 
   appendLog(`[INFO] Selected primary JAR Engine: ${selectedMainJar}`);
@@ -81,20 +81,18 @@ function run() {
 
   appendLog(`[INFO] Computed Classpath: ${cpString}`);
 
-  // Base Arguments: <input> <err> <fvu> <0> <csi> <0>
-  const baseArgs = [
-    `"${inputPath}"`,
-    `"${errPath}"`,
-    `"${fvuPath}"`,
-    '0',
-    csiPath !== '0' ? `"${csiPath}"` : '0',
-    '0'
-  ];
+  // Base Arguments format: <inputPath> <errPath> <fvuPath> <0> <csiPath>
+  const formattedCsiPath = csiPath !== '0' ? `"${csiPath}"` : '0';
 
   console.log("\n--- 3. EXECUTING JAVA ENGINE WITH VERSION FALLBACKS ---");
 
   const tryExecute = (cmd) => {
     appendLog(`\n[EXEC_CMD] ${cmd}`);
+    
+    // পুরানো টেস্ট ট্রেইল ফাইল থাকলে মুছে ফেলা
+    if (fs.existsSync(fvuPath)) fs.unlinkSync(fvuPath);
+    if (fs.existsSync(errPath)) fs.unlinkSync(errPath);
+
     try {
       const output = execSync(cmd, { 
         stdio: 'pipe', 
@@ -118,9 +116,10 @@ function run() {
     if (errCreated) {
       try {
         const errContent = fs.readFileSync(errPath, 'utf8');
+        // যদি "Incorrect FVU Version of JAR" আসে, তার মানে আর্গুমেন্ট ফরম্যাটে ভুল আছে
         if (errContent.includes("Incorrect FVU Version of JAR")) {
-          appendLog(`[WARN] Returned "Incorrect FVU Version of JAR" - Retrying with next combination...`);
-          fs.unlinkSync(errPath);
+          appendLog(`[WARN] Returned "Incorrect FVU Version of JAR" - Retrying next signature...`);
+          fs.unlinkSync(errPath); // ফলস এরর ফাইল মুছে ফেলা হলো
           return { success: false, isVersionErr: true };
         }
       } catch (e) {}
@@ -131,6 +130,7 @@ function run() {
       fs.writeFileSync(statusFilePath, "JAVA_EXEC_SUCCESS");
       return { success: true };
     } else if (errCreated) {
+      // যদি ফাইলের ডাটাবেজ/ফরম্যাটে সত্যি কোনো এরর থাকে (যেমন Line 1 error)
       appendLog(`[STAGE: JAVA_EXECUTION_SUCCESS] .err File Generated (Valid Validation Error).`);
       fs.writeFileSync(statusFilePath, "JAVA_EXEC_SUCCESS");
       return { success: true };
@@ -139,37 +139,22 @@ function run() {
     return { success: false };
   };
 
-  // Attempt 1: Standalone Standard Format with Flag (7th & 8th Args) -> 1 8.9
-  let res = tryExecute(`java -Dfile.encoding=UTF-8 -cp "${cpString}" com.tin.FVU.FVU ${baseArgs.join(' ')} 1 8.9`);
+  // Attempt 1: Standalone FVU 1.2 এর জন্য স্ট্যান্ডার্ড আর্গুমেন্ট সাইকেল (6 parameters)
+  let res = tryExecute(`java -Dfile.encoding=UTF-8 -cp "${cpString}" com.tin.FVU.FVU "${inputPath}" "${errPath}" "${fvuPath}" 0 ${formattedCsiPath} 0`);
 
-  // Attempt 2: Standalone Format -> 0 1.2
+  // Attempt 2: 7টি আর্গুমেন্ট ফরম্যাট (7th arg = "1")
   if (!res.success) {
-    res = tryExecute(`java -Dfile.encoding=UTF-8 -cp "${cpString}" com.tin.FVU.FVU ${baseArgs.join(' ')} 0 1.2`);
+    res = tryExecute(`java -Dfile.encoding=UTF-8 -cp "${cpString}" com.tin.FVU.FVU "${inputPath}" "${errPath}" "${fvuPath}" 0 ${formattedCsiPath} 0 1`);
   }
 
-  // Attempt 3: Standalone Format -> 1 1.2
+  // Attempt 3: RPU Core Main-Class কল করা (com.tin.FVU.FVUMain)
   if (!res.success) {
-    res = tryExecute(`java -Dfile.encoding=UTF-8 -cp "${cpString}" com.tin.FVU.FVU ${baseArgs.join(' ')} 1 1.2`);
+    res = tryExecute(`java -Dfile.encoding=UTF-8 -cp "${cpString}" com.tin.FVU.FVUMain "${inputPath}" "${errPath}" "${fvuPath}" 0 ${formattedCsiPath} 0`);
   }
 
-  // Attempt 4: Standalone Legacy Single Flag -> 8.9
+  // Attempt 4: Direct JAR Execution
   if (!res.success) {
-    res = tryExecute(`java -Dfile.encoding=UTF-8 -cp "${cpString}" com.tin.FVU.FVU ${baseArgs.join(' ')} 8.9`);
-  }
-
-  // Attempt 5: Standalone Legacy Single Flag -> 1.2
-  if (!res.success) {
-    res = tryExecute(`java -Dfile.encoding=UTF-8 -cp "${cpString}" com.tin.FVU.FVU ${baseArgs.join(' ')} 1.2`);
-  }
-
-  // Attempt 6: No extra flag
-  if (!res.success) {
-    res = tryExecute(`java -Dfile.encoding=UTF-8 -cp "${cpString}" com.tin.FVU.FVU ${baseArgs.join(' ')}`);
-  }
-
-  // Attempt 7: Direct -jar Execution
-  if (!res.success) {
-    res = tryExecute(`java -Dfile.encoding=UTF-8 -jar "${selectedMainJar}" ${baseArgs.join(' ')} 1 8.9`);
+    res = tryExecute(`java -Dfile.encoding=UTF-8 -jar "${selectedMainJar}" "${inputPath}" "${errPath}" "${fvuPath}" 0 ${formattedCsiPath} 0`);
   }
 
   if (!res.success) {
