@@ -4,7 +4,7 @@ import { execSync } from 'child_process';
 
 function run() {
   console.log("=========================================================");
-  console.log("      FastFVU - High-Speed Execution Engine              ");
+  console.log("      FastFVU - Precision Bytecode Engine & Fix          ");
   console.log("=========================================================");
 
   const workDir = path.resolve(process.cwd(), 'tmp_job');
@@ -33,6 +33,9 @@ function run() {
     process.exit(0);
   }
 
+  appendLog(`[INFO] Primary Target JAR: ${mainJarPath}`);
+  appendLog(`[INFO] Working Directory: ${jarDir}`);
+
   const safeBaseName = fileName.replace(/[^a-zA-Z0-9._-]/g, '_').replace(/\.[^/.]+$/, '');
   const inputPath = path.resolve(workDir, fileName);
   const errPath = path.resolve(workDir, `${safeBaseName}.err`);
@@ -52,8 +55,37 @@ function run() {
   const allJars = fs.readdirSync(jarDir).filter(f => f.endsWith('.jar'));
   const cpString = allJars.join(':') + ':.';
 
-  // Only test essential version flags for top speed
-  const versionsToTry = ['1.2', '8.9', '1', ''];
+  // Extract Exact Strings directly from Compiled Bytecode via javap
+  let extractedVersions = new Set();
+  try {
+    const extractTmp = path.resolve(process.cwd(), 'tmp_extract');
+    execSync(`rm -rf "${extractTmp}" && mkdir -p "${extractTmp}"`, { stdio: 'pipe' });
+    
+    // Unzip class files to temp directory
+    for (const jf of allJars) {
+      if (jf.includes('FVU') || jf.includes('Version')) {
+        execSync(`unzip -q -o "${path.join(jarDir, jf)}" "*.class" -d "${extractTmp}" 2>/dev/null || true`);
+      }
+    }
+
+    // Inspect bytecodes using built-in OpenJDK javap
+    const javapOut = execSync(`find "${extractTmp}" -name "*.class" -exec javap -c -p {} + 2>/dev/null || true`).toString('utf8');
+    const matches = javapOut.match(/([0-9]+\.[0-9]+(\.[0-9]+)?)/g);
+    if (matches) {
+      matches.forEach(m => {
+        if (m.length <= 6) extractedVersions.add(m);
+      });
+      appendLog(`[BYTECODE_INSPECT] Detected candidate strings from Java Bytecode: ${Array.from(extractedVersions).join(', ')}`);
+    }
+  } catch (e) {
+    appendLog(`[BYTECODE_INSPECT_WARN] ${e.message}`);
+  }
+
+  // Version candidates prioritized
+  const versionsToTry = Array.from(new Set([
+    ...Array.from(extractedVersions),
+    '1.2', '8.9', '8.8', '8.7', '1.2.0', '8.9.0', '1', '0', ''
+  ]));
 
   const tryExecute = (cmd) => {
     appendLog(`\n[EXEC_CMD] ${cmd}`);
@@ -61,11 +93,10 @@ function run() {
       if (fs.existsSync(errPath)) fs.unlinkSync(errPath);
       if (fs.existsSync(fvuPath)) fs.unlinkSync(fvuPath);
 
-      // Timeout reduced to 30 seconds per attempt for quick execution
       const output = execSync(cmd, { 
         cwd: jarDir,
         stdio: 'pipe', 
-        timeout: 30000, 
+        timeout: 45000, 
         maxBuffer: 1024 * 1024 * 5 
       });
       if (output && output.length > 0) appendLog(output.toString('utf8'));
@@ -81,8 +112,6 @@ function run() {
       try {
         const errContent = fs.readFileSync(errPath, 'utf8');
         appendLog(`[ERR_CONTENT] ${errContent.trim()}`);
-        
-        // If it's a version mismatch, fail fast and try next
         if (errContent.includes("Incorrect FVU Version of JAR")) {
           return { success: false };
         }
@@ -90,7 +119,7 @@ function run() {
     }
 
     if (fvuCreated || errCreated) {
-      appendLog(`[STAGE: JAVA_EXECUTION_SUCCESS] Generated result quickly!`);
+      appendLog(`[STAGE: JAVA_EXECUTION_SUCCESS] Valid validation output generated.`);
       fs.writeFileSync(statusFilePath, "JAVA_EXEC_SUCCESS");
       return { success: true };
     }
@@ -99,15 +128,15 @@ function run() {
 
   let res = { success: false };
 
-  // Fast execution loop
+  // Fast clean execution without quotation wrapping around version args
   for (const ver of versionsToTry) {
-    const vArg = ver ? ` "${ver}"` : '';
+    const vArg = ver ? ` ${ver}` : '';
     res = tryExecute(`java -Dfile.encoding=UTF-8 -cp "${cpString}" com.tin.FVU.FVU ${baseArgs.join(' ')}${vArg}`);
     if (res.success) break;
   }
 
   if (!res.success) {
-    appendLog(`\n[STAGE: JAVA_EXECUTION_FAILURE] Could not complete validation.`);
+    appendLog(`\n[STAGE: JAVA_EXECUTION_FAILURE] Version match failed.`);
     fs.writeFileSync(statusFilePath, "JAVA_EXEC_FAILED");
   }
 }
