@@ -153,14 +153,14 @@ jobs:
           CSI_FILE_NAME: ${{ github.event.client_payload.csiFileName }}
           EMAIL: ${{ github.event.client_payload.email }}
           JOB_ID: ${{ github.event.client_payload.jobId }}
-          SUPABASE_URL: ${{ secrets.SUPABASE_URL || secrets.NEXT_PUBLIC_SUPABASE_URL }}
-          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_ANON_KEY }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
           SUPABASE_BUCKET_NAME: ${{ secrets.SUPABASE_BUCKET_NAME || 'fvu-reports' }}
-          DB_HOST: ${{ secrets.DB_HOST || secrets.TIDB_HOST }}
-          DB_USER: ${{ secrets.DB_USER || secrets.TIDB_USER }}
-          DB_PASSWORD: ${{ secrets.DB_PASSWORD || secrets.TIDB_PASSWORD }}
-          DB_NAME: ${{ secrets.DB_NAME || secrets.TIDB_DATABASE }}
-          DB_PORT: ${{ secrets.DB_PORT || secrets.TIDB_PORT }}
+          DB_HOST: ${{ secrets.DB_HOST }}
+          DB_USER: ${{ secrets.DB_USER }}
+          DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
+          DB_NAME: ${{ secrets.DB_NAME }}
+          DB_PORT: ${{ secrets.DB_PORT || 4000 }}
         run: |
           echo "=== Step: Database & Storage Sync ==="
           export JAVA_VERSION_LOG="$(cat java_version.log 2>/dev/null || echo 'Not available')"
