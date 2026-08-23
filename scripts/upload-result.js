@@ -28,11 +28,11 @@ async function run() {
     supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_ANON_KEY;
     bucketName = process.env.SUPABASE_BUCKET_NAME || "fvu-reports";
 
-    dbHost = process.env.DB_HOST || process.env.TIDB_HOST;
-    dbUser = process.env.DB_USER || process.env.TIDB_USER;
-    dbPassword = process.env.DB_PASSWORD || process.env.TIDB_PASSWORD;
-    dbName = process.env.DB_NAME || process.env.TIDB_DATABASE || "fastfvu_central";
-    dbPort = Number(process.env.DB_PORT || process.env.TIDB_PORT || 4000);
+    dbHost = process.env.TIDB_HOST || process.env.DB_HOST;
+    dbUser = process.env.TIDB_USER || process.env.DB_USER;
+    dbPassword = process.env.TIDB_PASSWORD || process.env.DB_PASSWORD;
+    dbName = process.env.TIDB_DATABASE || process.env.DB_NAME || "fastfvu_central";
+    dbPort = Number(process.env.TIDB_PORT || process.env.DB_PORT || 4000);
 
     if (!dbHost || !dbUser || !dbPassword) {
       throw new Error("Missing critical TiDB Cloud environment variables (DB_HOST, DB_USER, DB_PASSWORD).");
@@ -185,7 +185,7 @@ async function run() {
       password: dbPassword, 
       database: dbName, 
       port: dbPort,
-      ssl: { rejectUnauthorized: false },
+      ssl: { minVersion: 'TLSv1.2', rejectUnauthorized: true },
       connectTimeout: 10000
     });
 
