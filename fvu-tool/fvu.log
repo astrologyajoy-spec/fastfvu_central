@@ -1,0 +1,16 @@
+detecting proxies
+proxy type: HTTP
+proxy hostname: proxy.tcs.com
+proxy port: 8080
+onlineservices.tin.egov.proteantech.in
+the proxy validator is true
+detecting proxies
+proxy type: HTTP
+proxy hostname: proxy.tcs.com
+proxy port: 8080
+onlineservices.tin.egov.proteantech.in
+--result--9.5^2.191^2.1321^1.1
+FVU_Electronic_after2010111.1
+FVU_Electronic_before2010112.191
+FVU_Paper2.1321
+the btnbrowseErrorFilePath is javax.swing.JButton[,0,0,0x0,invalid,alignmentX=0.0,alignmentY=0.5,border=javax.swing.plaf.BorderUIResource$CompoundBorderUIResource@1ff8b8f,flags=296,maximumSize=,minimumSize=,preferredSize=java.awt.Dimension[width=84,height=25],defaultIcon=,disabledIcon=,disabledSelectedIcon=,margin=javax.swing.plaf.InsetsUIResource[top=2,left=14,bottom=2,right=14],paintBorder=true,paintFocus=true,pressedIcon=,rolloverEnabled=true,rolloverIcon=,rolloverSelectedIcon=,selectedIcon=,text=Browse,defaultCapable=true]
