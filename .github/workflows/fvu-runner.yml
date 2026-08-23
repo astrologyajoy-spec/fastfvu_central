@@ -36,7 +36,6 @@ jobs:
         id: check_jar
         run: |
           echo "=== Step: Check JAR File Existence ==="
-          ls -la bin/ || true
           ls -la fvu-tool/ || true
           
           JAR_PATH=""
@@ -44,43 +43,16 @@ jobs:
             JAR_PATH="fvu-tool/TDS_STANDALONE_FVU_1.2.jar"
           elif [ -f "bin/TDS_STANDALONE_FVU_1.2.jar" ]; then
             JAR_PATH="bin/TDS_STANDALONE_FVU_1.2.jar"
-          elif [ -f "fvu-tool/TDS_TCS_FVU.jar" ]; then
-            JAR_PATH="fvu-tool/TDS_TCS_FVU.jar"
-          elif [ -f "bin/TDS_TCS_FVU.jar" ]; then
-            JAR_PATH="bin/TDS_TCS_FVU.jar"
-          else
-            JAR_PATH=$(find fvu-tool bin . -name "*.jar" 2>/dev/null | head -n 1)
           fi
 
           if [ -z "$JAR_PATH" ] || [ ! -f "$JAR_PATH" ]; then
-            echo "ERROR: Java JAR file not found at path" | tee jar_check.log
+            echo "ERROR: TDS_STANDALONE_FVU_1.2.jar file not found!" | tee jar_check.log
             echo "JAR_MISSING=true" >> $GITHUB_ENV
             echo "JAR_PATH=" >> $GITHUB_ENV
           else
             echo "JAR file verified at path: $JAR_PATH" | tee jar_check.log
             echo "JAR_MISSING=false" >> $GITHUB_ENV
             echo "JAR_PATH=$JAR_PATH" >> $GITHUB_ENV
-          fi
-
-      - name: Inspect JAR & Manifest Entry Point
-        id: inspect_jar
-        run: |
-          echo "=== Step: Inspect JAR & Manifest Entry Point ==="
-          if [ "$JAR_MISSING" = "true" ] || [ -z "$JAR_PATH" ]; then
-            echo "Skipping manifest inspection because JAR is missing."
-          else
-            echo "Inspecting JAR File: $JAR_PATH"
-            ls -la "$JAR_PATH"
-            
-            echo "--- META-INF/MANIFEST.MF Content ---"
-            unzip -p "$JAR_PATH" META-INF/MANIFEST.MF 2>/dev/null || jar xf "$JAR_PATH" META-INF/MANIFEST.MF && cat META-INF/MANIFEST.MF || echo "Manifest read failed"
-            
-            MANIFEST_MAIN=$(unzip -p "$JAR_PATH" META-INF/MANIFEST.MF 2>/dev/null | grep -i "^Main-Class:" | awk '{print $2}' | tr -d '\r')
-            echo "Detected Manifest Main-Class: '$MANIFEST_MAIN'"
-            echo "MANIFEST_MAIN=$MANIFEST_MAIN" >> $GITHUB_ENV
-
-            echo "--- Scanning for Class Files containing FVU / TDS ---"
-            unzip -l "$JAR_PATH" 2>/dev/null | grep -E -i "FVU|TDS" | head -n 30 || true
           fi
 
       - name: Write Input Files to Disk
