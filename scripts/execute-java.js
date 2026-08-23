@@ -4,7 +4,7 @@ import { execSync } from 'child_process';
 
 function run() {
   console.log("=========================================================");
-  console.log("      FastFVU - Enterprise Engine & Java 17 Fix          ");
+  console.log("      FastFVU - Java 17 Module & Headless Fix Engine     ");
   console.log("=========================================================");
 
   const workDir = path.resolve(process.cwd(), 'tmp_job');
@@ -26,15 +26,15 @@ function run() {
     jarDir = path.resolve(process.cwd(), 'bin');
   }
 
+  // Log directory create for Log4j
+  fs.mkdirSync(path.join(jarDir, 'logs'), { recursive: true });
+
   const mainJarPath = path.join(jarDir, 'TDS_STANDALONE_FVU_1.2.jar');
   if (!fs.existsSync(mainJarPath)) {
     appendLog(`[ERROR] Primary JAR not found at ${mainJarPath}`);
     fs.writeFileSync(statusFilePath, "JAVA_EXEC_FAILED");
     process.exit(0);
   }
-
-  appendLog(`[INFO] Primary Target JAR: ${mainJarPath}`);
-  appendLog(`[INFO] Working Directory: ${jarDir}`);
 
   const safeBaseName = fileName.replace(/[^a-zA-Z0-9._-]/g, '_').replace(/\.[^/.]+$/, '');
   const inputPath = path.resolve(workDir, fileName);
@@ -51,33 +51,21 @@ function run() {
     '0'
   ];
 
-  // Classpath build
   const allJars = fs.readdirSync(jarDir).filter(f => f.endsWith('.jar'));
   const cpString = allJars.join(':') + ':.';
 
-  // Extract Manifest version safely
-  let manifestVersion = null;
-  try {
-    const manifest = execSync(`unzip -p "${mainJarPath}" META-INF/MANIFEST.MF 2>/dev/null || true`).toString('utf8');
-    const match = manifest.match(/Implementation-Version:\s*([^\r\n]+)/i) || manifest.match(/Specification-Version:\s*([^\r\n]+)/i);
-    if (match && match[1]) {
-      manifestVersion = match[1].trim();
-      appendLog(`[MANIFEST_CHECK] Internal manifest version: ${manifestVersion}`);
-    }
-  } catch (e) {}
-
-  const versionsToTry = Array.from(new Set([
-    manifestVersion,
-    '1.2', '8.9', '8.8', '1.2.0', '1', '0', ''
-  ])).filter(Boolean);
-
-  // Java 17 Compatibility Flags for Legacy NSDL JARS
+  // Java 17 JVM Options for NSDL Standalone FVU
   const javaOptions = [
     '-Dfile.encoding=UTF-8',
+    '-Djava.awt.headless=true',
+    '--add-modules=jdk.unsupported',
+    '--add-exports=jdk.unsupported/sun.misc=ALL-UNNAMED',
     '--add-opens=java.base/java.lang=ALL-UNNAMED',
     '--add-opens=java.base/java.util=ALL-UNNAMED',
-    '--add-exports=java.base/sun.misc=ALL-UNNAMED'
+    '--add-opens=java.base/java.text=ALL-UNNAMED'
   ].join(' ');
+
+  const versionsToTry = ['1.2', '8.9', '1'];
 
   const tryExecute = (cmd) => {
     appendLog(`\n[EXEC_CMD] ${cmd}`);
@@ -88,7 +76,7 @@ function run() {
       const output = execSync(cmd, { 
         cwd: jarDir,
         stdio: 'pipe', 
-        timeout: 45000, 
+        timeout: 60000, 
         maxBuffer: 1024 * 1024 * 10 
       });
       if (output && output.length > 0) appendLog(`[STDOUT]\n${output.toString('utf8')}`);
@@ -103,17 +91,15 @@ function run() {
     if (errCreated) {
       try {
         const errContent = fs.readFileSync(errPath, 'utf8');
-        appendLog(`[ERR_CONTENT] ${errContent.trim()}`);
-        
+        appendLog(`[ERR_CONTENT]\n${errContent.trim()}`);
         if (errContent.includes("Incorrect FVU Version of JAR")) {
           return { success: false };
         }
       } catch (e) {}
     }
 
-    // If .fvu created or .err created with actual validation issues, success!
     if (fvuCreated || errCreated) {
-      appendLog(`[STAGE: JAVA_EXECUTION_SUCCESS] Output files generated successfully.`);
+      appendLog(`[STAGE: JAVA_EXECUTION_SUCCESS] FVU process completed.`);
       fs.writeFileSync(statusFilePath, "JAVA_EXEC_SUCCESS");
       return { success: true };
     }
