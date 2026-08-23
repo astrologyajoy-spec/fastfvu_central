@@ -12,7 +12,6 @@ function run() {
   const csiFileName = process.env.CSI_FILE_NAME || null;
   const jarMissing = process.env.JAR_MISSING === 'true';
   const jarPath = process.env.JAR_PATH;
-  const manifestMain = process.env.MANIFEST_MAIN;
 
   const logFilePath = 'java_run.log';
   const statusFilePath = 'status.txt';
@@ -39,27 +38,19 @@ function run() {
   console.log("\n--- 1. INPUT FILE & CONTENT VALIDATION ---");
   appendLog(`Target Output Directory: ${workDir}`);
 
-  // Validation: txt file
   if (fs.existsSync(inputPath)) {
     const stat = fs.statSync(inputPath);
     appendLog(`[OK] Input Text File Name: ${fileName}`);
     appendLog(`[OK] Input Text File Size: ${stat.size} bytes`);
-    if (stat.size === 0) {
-      appendLog(`[ERROR] Input Text File is empty (0 bytes)!`);
-    }
   } else {
     appendLog(`[ERROR] Input Text File does not exist at ${inputPath}`);
   }
 
-  // Validation: csi file
   if (csiFileName && csiPath !== '0') {
     if (fs.existsSync(csiPath)) {
       const stat = fs.statSync(csiPath);
       appendLog(`[OK] Input CSI File Name: ${csiFileName}`);
       appendLog(`[OK] Input CSI File Size: ${stat.size} bytes`);
-      if (stat.size === 0) {
-        appendLog(`[ERROR] Input CSI File is empty (0 bytes)!`);
-      }
     } else {
       appendLog(`[ERROR] Input CSI File does not exist at ${csiPath}`);
     }
@@ -67,48 +58,44 @@ function run() {
     appendLog(`[INFO] No CSI file provided (using '0').`);
   }
 
-  console.log("\n--- 2. INPUT DATA INTEGRITY CHECKS ---");
-  try {
-    const contentBuffer = fs.readFileSync(inputPath);
-    const headerSnippet = contentBuffer.toString('utf8', 0, Math.min(500, contentBuffer.length));
-    
-    appendLog(`[INFO] File Encoding Read as UTF-8`);
-    
-    if (headerSnippet.includes('FH') || headerSnippet.includes('BH') || headerSnippet.includes('^')) {
-      appendLog(`[OK] Detected typical NSDL structural markers (FH/BH/Caret).`);
-    } else {
-      appendLog(`[WARN] The text file does not appear to contain standard NSDL headers like 'FH' or 'BH'.`);
+  console.log("\n--- 2. SELECTING BEST MATCHING JAR ENGINE ---");
+  const jarDir = path.dirname(jarPath);
+  
+  // NSDL Standalone JAR 우선순위 설정
+  const jarCandidates = [
+    path.join(jarDir, 'TDS_STANDALONE_FVU_1.2.jar'),
+    path.join(jarDir, '1TDS_STANDALONE_FVU_1.1.jar'),
+    path.join(jarDir, 'TDS_TCS_FVU.jar'),
+    jarPath
+  ];
+
+  let selectedMainJar = jarPath;
+  for (const cand of jarCandidates) {
+    if (fs.existsSync(cand)) {
+      selectedMainJar = cand;
+      break;
     }
-    
-    const firstFewLines = headerSnippet.split('\n').slice(0, 3).map(l => l.substring(0, 60)).join('\n');
-    appendLog(`[INFO] First few lines snippet:\n${firstFewLines}...\n`);
-  } catch (err) {
-    appendLog(`[ERROR] Failed to read input file for integrity check: ${err.message}`);
   }
 
-  console.log("\n--- 3. JAR COMMAND & PARALLEL PATH AUDIT ---");
-  
-  const jarDir = path.dirname(jarPath);
+  appendLog(`[INFO] Selected primary JAR Engine: ${selectedMainJar}`);
+
+  // Classpath তৈরি করা
   let cpString = '';
   try {
     const files = fs.readdirSync(jarDir);
-    const jars = files.filter(f => f.endsWith('.jar')).map(f => path.join(jarDir, f));
-    cpString = jars.join(':') + ':.';
+    const otherJars = files
+      .filter(f => f.endsWith('.jar') && path.join(jarDir, f) !== selectedMainJar)
+      .map(f => path.join(jarDir, f));
+    
+    // Primary JAR টি Classpath এর একদম প্রথমে থাকবে
+    cpString = [selectedMainJar, ...otherJars].join(':') + ':.';
   } catch (err) {
-    appendLog(`[WARN] Could not build classpath dynamically: ${err.message}`);
-    cpString = jarPath;
+    cpString = selectedMainJar;
   }
 
   appendLog(`[INFO] Computed Classpath: ${cpString}`);
 
-  // NSDL Standalone CLI Parameter Structure:
-  // 1: Input Text Path
-  // 2: Error Output Path
-  // 3: FVU Output Path
-  // 4: Zero / Flag (0)
-  // 5: CSI File Path (or '0')
-  // 6: Hash Option (0)
-  const javaArgs = [
+  const baseArgs = [
     `"${inputPath}"`,
     `"${errPath}"`,
     `"${fvuPath}"`,
@@ -117,74 +104,75 @@ function run() {
     '0'
   ];
 
-  let execCommand = '';
-  if (manifestMain) {
-    execCommand = `java -Dfile.encoding=UTF-8 -cp "${cpString}" ${manifestMain} ${javaArgs.join(' ')}`;
-  } else {
-    execCommand = `java -Dfile.encoding=UTF-8 -jar "${jarPath}" ${javaArgs.join(' ')}`;
-  }
+  console.log("\n--- 3. EXECUTING JAVA ENGINE WITH FALLBACK STRATEGIES ---");
 
-  appendLog(`\n[EXEC_CMD] ${execCommand}`);
-
-  console.log("\n--- 4. ENHANCED LOGGING & FILE GENERATION VERIFICATION ---");
-  
-  const executeAndVerify = (cmd) => {
+  const tryExecute = (cmd) => {
+    appendLog(`\n[EXEC_CMD] ${cmd}`);
     try {
       const output = execSync(cmd, { 
         stdio: 'pipe', 
         timeout: 180000, 
         maxBuffer: 1024 * 1024 * 10 
       });
-      appendLog(output.toString('utf8'));
+      if (output && output.length > 0) {
+        appendLog(output.toString('utf8'));
+      }
     } catch (err) {
-      appendLog(`Execution Error: ${err.message}`);
-      if (err.stdout) appendLog(`\n--- STDOUT ---\n${err.stdout.toString('utf8')}`);
-      if (err.stderr) appendLog(`\n--- STDERR ---\n${err.stderr.toString('utf8')}`);
+      appendLog(`Execution Output/Note: ${err.message}`);
+      if (err.stdout) appendLog(`--- STDOUT ---\n${err.stdout.toString('utf8')}`);
+      if (err.stderr) appendLog(`--- STDERR ---\n${err.stderr.toString('utf8')}`);
     }
 
-    // Check if files were generated
     const fvuCreated = fs.existsSync(fvuPath);
     const errCreated = fs.existsSync(errPath);
 
-    appendLog(`\n[RESULT_CHECK] .fvu File Exists: ${fvuCreated}`);
-    appendLog(`[RESULT_CHECK] .err File Exists: ${errCreated}`);
+    appendLog(`[RESULT_CHECK] .fvu Exists: ${fvuCreated} | .err Exists: ${errCreated}`);
 
-    if (fvuCreated) {
-      appendLog(`[STAGE: JAVA_EXECUTION_SUCCESS] FVU generated successfully!`);
-      fs.writeFileSync(statusFilePath, "JAVA_EXEC_SUCCESS");
-      return true;
-    } else if (errCreated) {
-      appendLog(`[STAGE: JAVA_EXECUTION_SUCCESS] Validation completed with errors (.err generated).`);
-      
-      // Read and log the .err content for debug
+    if (errCreated) {
       try {
         const errContent = fs.readFileSync(errPath, 'utf8');
-        appendLog(`\n=== .ERR FILE CONTENT SUMMARY ===\n${errContent.substring(0, 1000)}`);
-      } catch (e) {
-        appendLog(`Could not read .err file: ${e.message}`);
-      }
-      
-      fs.writeFileSync(statusFilePath, "JAVA_EXEC_SUCCESS");
-      return true;
-    } else {
-      appendLog(`[STAGE: JAVA_EXECUTION_FAILURE] Neither .fvu nor .err file was generated by NSDL Engine!`);
-      return false;
+        if (errContent.includes("Incorrect FVU Version of JAR")) {
+          appendLog(`[WARN] Returned "Incorrect FVU Version of JAR" - Retrying with different mode...`);
+          // Delete faulty err file so we can retry cleanly
+          fs.unlinkSync(errPath);
+          return { success: false, retryNeeded: true };
+        }
+      } catch (e) {}
     }
+
+    if (fvuCreated) {
+      appendLog(`[STAGE: JAVA_EXECUTION_SUCCESS] .fvu File Generated Successfully!`);
+      fs.writeFileSync(statusFilePath, "JAVA_EXEC_SUCCESS");
+      return { success: true };
+    } else if (errCreated) {
+      appendLog(`[STAGE: JAVA_EXECUTION_SUCCESS] .err File Generated (Valid Validation Error).`);
+      fs.writeFileSync(statusFilePath, "JAVA_EXEC_SUCCESS");
+      return { success: true };
+    }
+
+    return { success: false, retryNeeded: false };
   };
 
-  // Main Execution Attempt
-  let isSuccess = executeAndVerify(execCommand);
+  // Attempt 1: Standalone Main Class with 6 Arguments
+  let res = tryExecute(`java -Dfile.encoding=UTF-8 -cp "${cpString}" com.tin.FVU.FVU ${baseArgs.join(' ')}`);
 
-  // Fallback Attempt if main failed and manifestMain was present
-  if (!isSuccess && manifestMain) {
-    appendLog(`\n[INFO] Retrying with -jar as fallback...`);
-    const fallbackCommand = `java -Dfile.encoding=UTF-8 -jar "${jarPath}" ${javaArgs.join(' ')}`;
-    appendLog(`[EXEC_CMD] ${fallbackCommand}`);
-    
-    isSuccess = executeAndVerify(fallbackCommand);
+  // Attempt 2: Standalone Main Class with '8.9' version parameter
+  if (!res.success) {
+    res = tryExecute(`java -Dfile.encoding=UTF-8 -cp "${cpString}" com.tin.FVU.FVU ${baseArgs.join(' ')} 8.9`);
   }
 
-  if (!isSuccess) {
+  // Attempt 3: Fallback using -jar direct execution
+  if (!res.success) {
+    res = tryExecute(`java -Dfile.encoding=UTF-8 -jar "${selectedMainJar}" ${baseArgs.join(' ')}`);
+  }
+
+  // Attempt 4: Fallback using -jar with '8.9'
+  if (!res.success) {
+    res = tryExecute(`java -Dfile.encoding=UTF-8 -jar "${selectedMainJar}" ${baseArgs.join(' ')} 8.9`);
+  }
+
+  if (!res.success) {
+    appendLog(`\n[STAGE: JAVA_EXECUTION_FAILURE] Could not generate .fvu or valid .err file.`);
     fs.writeFileSync(statusFilePath, "JAVA_EXEC_FAILED");
   }
 }
