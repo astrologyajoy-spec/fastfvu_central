@@ -185,7 +185,10 @@ async function run() {
       password: dbPassword, 
       database: dbName, 
       port: dbPort,
-      ssl: { minVersion: 'TLSv1.2', rejectUnauthorized: true },
+      ssl: {
+        minVersion: 'TLSv1.2',
+        rejectUnauthorized: true
+      },
       connectTimeout: 10000
     });
 
@@ -232,9 +235,6 @@ async function run() {
   }
 
   // --- FINAL CHECK ---
-  // Previously, we exited with 1 if `isSuccess` was false (FVU validation failure).
-  // However, an FVU validation failure is NOT an infrastructure failure.
-  // The sync to DB/Supabase was successful, so the GitHub Action step should pass.
   if (!isSuccess) {
     console.log("[INFO] FVU validation completed with errors. Results synced successfully.");
   } else {
@@ -247,4 +247,3 @@ run().catch(err => {
   console.error(err.stack || err.message);
   process.exit(1);
 });
-
