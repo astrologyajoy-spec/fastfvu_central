@@ -27,14 +27,14 @@ function run() {
   if (jarMissing || !jarPath) {
     appendLog("Skipping Java execution because JAR file is missing.");
     fs.writeFileSync(statusFilePath, "JAVA_EXEC_FAILED");
-    process.exit(0); // Exit successfully so next step handles the failure reporting
+    process.exit(0);
   }
 
   const safeBaseName = fileName.replace(/[^a-zA-Z0-9._-]/g, '_').replace(/\.[^/.]+$/, '');
   const inputPath = path.join(workDir, fileName);
   const errPath = path.join(workDir, `${safeBaseName}.err`);
   const fvuPath = path.join(workDir, `${safeBaseName}.fvu`);
-  const csiPath = csiFileName ? path.join(workDir, csiFileName) : '0';
+  const csiPath = (csiFileName && csiFileName !== '0') ? path.join(workDir, csiFileName) : '0';
 
   console.log("\n--- 1. INPUT FILE & CONTENT VALIDATION ---");
   appendLog(`Target Output Directory: ${workDir}`);
@@ -70,7 +70,6 @@ function run() {
   console.log("\n--- 2. INPUT DATA INTEGRITY CHECKS ---");
   try {
     const contentBuffer = fs.readFileSync(inputPath);
-    // Read first 500 bytes for header check
     const headerSnippet = contentBuffer.toString('utf8', 0, Math.min(500, contentBuffer.length));
     
     appendLog(`[INFO] File Encoding Read as UTF-8`);
@@ -78,10 +77,9 @@ function run() {
     if (headerSnippet.includes('FH') || headerSnippet.includes('BH') || headerSnippet.includes('^')) {
       appendLog(`[OK] Detected typical NSDL structural markers (FH/BH/Caret).`);
     } else {
-      appendLog(`[WARN] The text file does not appear to contain standard NSDL headers like 'FH' or 'BH'. FVU validation may fail.`);
+      appendLog(`[WARN] The text file does not appear to contain standard NSDL headers like 'FH' or 'BH'.`);
     }
     
-    // Log first few lines sanitized
     const firstFewLines = headerSnippet.split('\n').slice(0, 3).map(l => l.substring(0, 60)).join('\n');
     appendLog(`[INFO] First few lines snippet:\n${firstFewLines}...\n`);
   } catch (err) {
@@ -90,7 +88,6 @@ function run() {
 
   console.log("\n--- 3. JAR COMMAND & PARALLEL PATH AUDIT ---");
   
-  // Normalize paths for safety
   const jarDir = path.dirname(jarPath);
   let cpString = '';
   try {
@@ -104,15 +101,20 @@ function run() {
 
   appendLog(`[INFO] Computed Classpath: ${cpString}`);
 
-  // Base arguments: <input> <err> <fvu> <0> <csi> <0> <version>
+  // NSDL Standalone CLI Parameter Structure:
+  // 1: Input Text Path
+  // 2: Error Output Path
+  // 3: FVU Output Path
+  // 4: Zero / Flag (0)
+  // 5: CSI File Path (or '0')
+  // 6: Hash Option (0)
   const javaArgs = [
     `"${inputPath}"`,
     `"${errPath}"`,
     `"${fvuPath}"`,
     '0',
     csiPath !== '0' ? `"${csiPath}"` : '0',
-    '0',
-    '8.9'
+    '0'
   ];
 
   let execCommand = '';
@@ -124,51 +126,66 @@ function run() {
 
   appendLog(`\n[EXEC_CMD] ${execCommand}`);
 
-  console.log("\n--- 4. ENHANCED LOGGING (EXECUTION) ---");
+  console.log("\n--- 4. ENHANCED LOGGING & FILE GENERATION VERIFICATION ---");
   
-  try {
-    // 3 minutes timeout = 180000 ms
-    const output = execSync(execCommand, { 
-      stdio: 'pipe', 
-      timeout: 180000, 
-      maxBuffer: 1024 * 1024 * 10 // 10 MB buffer to prevent crash on large logs
-    });
-    
-    appendLog(`[STAGE: JAVA_EXECUTION_SUCCESS]`);
-    appendLog(output.toString('utf8'));
-    
-  } catch (err) {
-    appendLog(`\n[STAGE: JAVA_EXECUTION_FAILURE]`);
-    appendLog(`Exit Code: ${err.status}`);
-    appendLog(`Signal: ${err.signal}`);
-    appendLog(`Error Message: ${err.message}`);
-    if (err.stdout) appendLog(`\n--- STDOUT ---\n${err.stdout.toString('utf8')}`);
-    if (err.stderr) appendLog(`\n--- STDERR ---\n${err.stderr.toString('utf8')}`);
-
-    // If it fails using classpath + Main-Class, fallback to -jar as a retry
-    if (manifestMain) {
-      appendLog(`\n[INFO] Retrying with -jar as fallback...`);
-      const fallbackCommand = `java -Dfile.encoding=UTF-8 -jar "${jarPath}" ${javaArgs.join(' ')}`;
-      appendLog(`[EXEC_CMD] ${fallbackCommand}`);
-      
-      try {
-        const fbOutput = execSync(fallbackCommand, { 
-          stdio: 'pipe', 
-          timeout: 180000, 
-          maxBuffer: 1024 * 1024 * 10 
-        });
-        appendLog(`[STAGE: JAVA_EXECUTION_SUCCESS] (Fallback)`);
-        appendLog(fbOutput.toString('utf8'));
-      } catch (fbErr) {
-        appendLog(`\n[STAGE: JAVA_EXECUTION_FAILURE] (Fallback)`);
-        appendLog(`Exit Code: ${fbErr.status}`);
-        if (fbErr.stdout) appendLog(`\n--- STDOUT ---\n${fbErr.stdout.toString('utf8')}`);
-        if (fbErr.stderr) appendLog(`\n--- STDERR ---\n${fbErr.stderr.toString('utf8')}`);
-        fs.writeFileSync(statusFilePath, "JAVA_EXEC_FAILED");
-      }
-    } else {
-      fs.writeFileSync(statusFilePath, "JAVA_EXEC_FAILED");
+  const executeAndVerify = (cmd) => {
+    try {
+      const output = execSync(cmd, { 
+        stdio: 'pipe', 
+        timeout: 180000, 
+        maxBuffer: 1024 * 1024 * 10 
+      });
+      appendLog(output.toString('utf8'));
+    } catch (err) {
+      appendLog(`Execution Error: ${err.message}`);
+      if (err.stdout) appendLog(`\n--- STDOUT ---\n${err.stdout.toString('utf8')}`);
+      if (err.stderr) appendLog(`\n--- STDERR ---\n${err.stderr.toString('utf8')}`);
     }
+
+    // Check if files were generated
+    const fvuCreated = fs.existsSync(fvuPath);
+    const errCreated = fs.existsSync(errPath);
+
+    appendLog(`\n[RESULT_CHECK] .fvu File Exists: ${fvuCreated}`);
+    appendLog(`[RESULT_CHECK] .err File Exists: ${errCreated}`);
+
+    if (fvuCreated) {
+      appendLog(`[STAGE: JAVA_EXECUTION_SUCCESS] FVU generated successfully!`);
+      fs.writeFileSync(statusFilePath, "JAVA_EXEC_SUCCESS");
+      return true;
+    } else if (errCreated) {
+      appendLog(`[STAGE: JAVA_EXECUTION_SUCCESS] Validation completed with errors (.err generated).`);
+      
+      // Read and log the .err content for debug
+      try {
+        const errContent = fs.readFileSync(errPath, 'utf8');
+        appendLog(`\n=== .ERR FILE CONTENT SUMMARY ===\n${errContent.substring(0, 1000)}`);
+      } catch (e) {
+        appendLog(`Could not read .err file: ${e.message}`);
+      }
+      
+      fs.writeFileSync(statusFilePath, "JAVA_EXEC_SUCCESS");
+      return true;
+    } else {
+      appendLog(`[STAGE: JAVA_EXECUTION_FAILURE] Neither .fvu nor .err file was generated by NSDL Engine!`);
+      return false;
+    }
+  };
+
+  // Main Execution Attempt
+  let isSuccess = executeAndVerify(execCommand);
+
+  // Fallback Attempt if main failed and manifestMain was present
+  if (!isSuccess && manifestMain) {
+    appendLog(`\n[INFO] Retrying with -jar as fallback...`);
+    const fallbackCommand = `java -Dfile.encoding=UTF-8 -jar "${jarPath}" ${javaArgs.join(' ')}`;
+    appendLog(`[EXEC_CMD] ${fallbackCommand}`);
+    
+    isSuccess = executeAndVerify(fallbackCommand);
+  }
+
+  if (!isSuccess) {
+    fs.writeFileSync(statusFilePath, "JAVA_EXEC_FAILED");
   }
 }
 
