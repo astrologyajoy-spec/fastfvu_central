@@ -185,8 +185,8 @@ async function run() {
       password: dbPassword, 
       database: dbName, 
       port: dbPort,
-      ssl: { minVersion: 'TLSv1.2', rejectUnauthorized: true },
-      connectTimeout: 15000
+      ssl: { rejectUnauthorized: false },
+      connectTimeout: 10000
     });
 
     const statusVal = isSuccess ? "COMPLETED" : "FAILED";
