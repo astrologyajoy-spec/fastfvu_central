@@ -4,7 +4,7 @@ import { execSync } from 'child_process';
 
 function run() {
   console.log("=========================================================");
-  console.log("      FastFVU - Deep Diagnostic Execution Engine         ");
+  console.log("      FastFVU - Fixed Standalone Execution Engine        ");
   console.log("=========================================================");
 
   const workDir = path.resolve(process.cwd(), 'tmp_job');
@@ -26,9 +26,6 @@ function run() {
     jarDir = path.resolve(process.cwd(), 'bin');
   }
 
-  const fvuLogsDir = path.join(jarDir, 'logs');
-  fs.mkdirSync(fvuLogsDir, { recursive: true });
-
   const mainJarPath = path.join(jarDir, 'TDS_STANDALONE_FVU_1.2.jar');
   if (!fs.existsSync(mainJarPath)) {
     appendLog(`[ERROR] Primary JAR not found at ${mainJarPath}`);
@@ -40,21 +37,21 @@ function run() {
   const inputPath = path.resolve(workDir, fileName);
   const errPath = path.resolve(workDir, `${safeBaseName}.err`);
   const fvuPath = path.resolve(workDir, `${safeBaseName}.fvu`);
-  
-  // Resolve CSI Path accurately
+
+  // Resolve CSI Path accurately & set correct flag (1 if exists, 0 if not)
   let csiPath = '0';
+  let hasCsiFlag = '0';
   if (csiFileName && csiFileName !== '0') {
     const candidateCsi = path.resolve(workDir, csiFileName);
     if (fs.existsSync(candidateCsi)) {
       csiPath = candidateCsi;
+      hasCsiFlag = '1'; // Standard Standalone Flag when CSI exists
     } else {
       appendLog(`[WARN] Specified CSI file not found on disk: ${candidateCsi}`);
     }
   }
 
-  // -------------------------------------------------------------
-  // Dynamic Header Extraction (10th Field / Index 9)
-  // -------------------------------------------------------------
+  // Header Extraction
   let extractedVer = null;
   try {
     if (fs.existsSync(inputPath)) {
@@ -62,12 +59,10 @@ function run() {
       const firstLine = fileContent.split('\n')[0];
       const parts = firstLine.split('^');
       
-      // 1. Direct Index 9 (10th Field)
       if (parts.length > 9 && parts[9] && parts[9].trim() !== '') {
         extractedVer = parts[9].trim();
       }
 
-      // 2. Fallback search
       if (!extractedVer) {
         for (const part of parts) {
           const trimmed = part.trim();
@@ -92,15 +87,6 @@ function run() {
 
   const uniqueVersions = [...new Set(versionsToTry)];
 
-  const baseArgs = [
-    `"${inputPath}"`,
-    `"${errPath}"`,
-    `"${fvuPath}"`,
-    '0',
-    csiPath !== '0' ? `"${csiPath}"` : '0',
-    '0'
-  ];
-
   // Exclude VersionValidator.jar
   const jarFiles = fs.readdirSync(jarDir).filter(f => 
     f.endsWith('.jar') && 
@@ -124,21 +110,32 @@ function run() {
     '--add-opens=java.base/java.io=ALL-UNNAMED'
   ].join(' ');
 
-  const tryExecute = (cmd) => {
+  const tryExecute = (versionStr) => {
+    // Clean string escaping and build positional parameters without double quotes
+    const cleanVer = versionStr.replace(/"/g, '');
+    
+    // Command positional args: input, err, fvu, hasCsiFlag, csiPath, 0, versionStr
+    const cmdArgs = [
+      `"${inputPath}"`,
+      `"${errPath}"`,
+      `"${fvuPath}"`,
+      hasCsiFlag,
+      csiPath === '0' ? '0' : `"${csiPath}"`,
+      '0',
+      `"${cleanVer}"`
+    ];
+
+    const cmd = `java ${javaOptions} -cp "${cpString}" com.tin.FVU.FVU ${cmdArgs.join(' ')}`;
     appendLog(`\n[EXEC_CMD] ${cmd}`);
     
     if (fs.existsSync(errPath)) fs.unlinkSync(errPath);
     if (fs.existsSync(fvuPath)) fs.unlinkSync(fvuPath);
-    
-    // Clear log directory files before execution
-    const tdsLogFile = path.join(fvuLogsDir, 'TDS_LOG.txt');
-    if (fs.existsSync(tdsLogFile)) fs.unlinkSync(tdsLogFile);
 
     try {
       const output = execSync(cmd, { 
-        cwd: jarDir,
+        cwd: process.cwd(), // Execute from Root Working Directory
         stdio: 'pipe', 
-        timeout: 60000, 
+        timeout: 90000, 
         maxBuffer: 1024 * 1024 * 10 
       });
       if (output && output.length > 0) appendLog(`[STDOUT]\n${output.toString('utf8')}`);
@@ -147,20 +144,20 @@ function run() {
       if (err.stderr && err.stderr.length) appendLog(`[STDERR]\n${err.stderr.toString('utf8')}`);
     }
 
-    // Capture log files generated in working directory as well
-    const rootTdsLog = path.resolve(process.cwd(), 'TDS_LOG.txt');
-    if (fs.existsSync(rootTdsLog)) {
-      try {
-        const rootLogContent = fs.readFileSync(rootTdsLog, 'utf8');
-        appendLog(`[ROOT_TDS_LOG]\n${rootLogContent.trim()}`);
-      } catch (e) {}
-    }
+    // Capture TDS internal logs if generated anywhere
+    const possibleLogPaths = [
+      path.resolve(process.cwd(), 'TDS_LOG.txt'),
+      path.resolve(jarDir, 'TDS_LOG.txt'),
+      path.resolve(jarDir, 'logs', 'TDS_LOG.txt')
+    ];
 
-    if (fs.existsSync(tdsLogFile)) {
-      try {
-        const internalLog = fs.readFileSync(tdsLogFile, 'utf8');
-        appendLog(`[INTERNAL_TDS_LOG]\n${internalLog.trim()}`);
-      } catch (e) {}
+    for (const logP of possibleLogPaths) {
+      if (fs.existsSync(logP)) {
+        try {
+          const lContent = fs.readFileSync(logP, 'utf8');
+          appendLog(`[INTERNAL_LOG: ${path.basename(logP)}]\n${lContent.trim()}`);
+        } catch (e) {}
+      }
     }
 
     const fvuCreated = fs.existsSync(fvuPath);
@@ -177,25 +174,23 @@ function run() {
     }
 
     if (fvuCreated || errCreated) {
-      appendLog(`[STAGE: JAVA_EXECUTION_SUCCESS] Generated output. (FVU: ${fvuCreated}, ERR: ${errCreated})`);
+      appendLog(`[STAGE: JAVA_EXECUTION_SUCCESS] Process output generated (FVU: ${fvuCreated}, ERR: ${errCreated}).`);
       fs.writeFileSync(statusFilePath, "JAVA_EXEC_SUCCESS");
       return { success: true };
     }
+
     return { success: false };
   };
 
   let res = { success: false };
 
   for (const ver of uniqueVersions) {
-    const cleanVer = ver.replace(/"/g, '');
-    const vArg = ` "${cleanVer}"`;
-    const cmd = `java ${javaOptions} -cp "${cpString}" com.tin.FVU.FVU ${baseArgs.join(' ')}${vArg}`;
-    res = tryExecute(cmd);
+    res = tryExecute(ver);
     if (res.success) break;
   }
 
   if (!res.success) {
-    appendLog(`\n[STAGE: JAVA_EXECUTION_FAILURE] Could not generate .fvu or .err files.`);
+    appendLog(`\n[STAGE: JAVA_EXECUTION_FAILURE] Execution complete without output files.`);
     fs.writeFileSync(statusFilePath, "JAVA_EXEC_FAILED");
   }
 }
