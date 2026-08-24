@@ -92,11 +92,13 @@ jobs:
           echo "=== Step: Write Input Files ==="
           mkdir -p tmp_job
           FILE_NAME="${FILE_NAME:-statement.txt}"
-          echo "$FILE_CONTENT" > "tmp_job/$FILE_NAME"
+          
+          # Properly write text files preserving multi-line breaks
+          printf "%s" "$FILE_CONTENT" > "tmp_job/$FILE_NAME"
           echo "Input text file written successfully to disk: tmp_job/$FILE_NAME" | tee input_write.log
 
           if [ -n "$CSI_FILE_CONTENT" ] && [ -n "$CSI_FILE_NAME" ]; then
-            echo "$CSI_FILE_CONTENT" > "tmp_job/$CSI_FILE_NAME"
+            printf "%s" "$CSI_FILE_CONTENT" > "tmp_job/$CSI_FILE_NAME"
             echo "CSI file written successfully to disk: tmp_job/$CSI_FILE_NAME" >> input_write.log
           fi
 
