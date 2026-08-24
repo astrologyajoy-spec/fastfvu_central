@@ -38,7 +38,7 @@ function run() {
   const errPath = path.resolve(workDir, `${safeBaseName}.err`);
   const fvuPath = path.resolve(workDir, `${safeBaseName}.fvu`);
 
-  // Resolve CSI Path accurately & set correct flag (1 if exists, 0 if not)
+  // Resolve CSI Path accurately
   let csiPath = '0';
   let hasCsiFlag = '0';
   if (csiFileName && csiFileName !== '0') {
@@ -51,60 +51,45 @@ function run() {
     }
   }
 
-  // File Preparation & Dynamic Temporary Patching if Header Needs Alignment
-  let inputPath = rawInputPath;
-  let extractedVer = null;
+  // File Preparation without modifying the original input file
+  let workingInputPath = rawInputPath;
+  let tempBufferCreated = false;
 
   try {
     if (fs.existsSync(rawInputPath)) {
-      let fileContent = fs.readFileSync(rawInputPath, 'utf8');
+      const fileContent = fs.readFileSync(rawInputPath, 'utf8');
       const lines = fileContent.split(/\r?\n/);
       const firstLine = lines[0];
       const parts = firstLine.split('^');
 
-      if (parts.length > 9 && parts[9] && parts[9].trim() !== '') {
-        extractedVer = parts[9].trim();
-      }
+      appendLog(`[INFO] Original File Header Version: "${parts[9] || ''}"`);
 
-      if (!extractedVer) {
-        for (const part of parts) {
-          const trimmed = part.trim();
-          if (trimmed.includes('RPU') || trimmed.includes('FVU')) {
-            extractedVer = trimmed;
-            break;
-          }
-        }
-      }
-
-      appendLog(`[INFO] Original RPU Header Version: "${extractedVer}"`);
-
-      // If the header contains version incompatible with standalone jar execution, 
-      // create a normalized temporary working file without modifying original file.
-      if (extractedVer && (extractedVer.includes('Protean RPU 1.2') || extractedVer === '1.2')) {
-        parts[9] = '8.5';
+      // Standalone JAR expects standard RPU Header in position 10 during parsing
+      if (parts[9] && (parts[9].includes('Protean RPU 1.2') || parts[9] === '1.2')) {
+        parts[9] = 'Protean RPU 8.5'; // Standard header compatible with Standalone parser
         lines[0] = parts.join('^');
-        
-        const patchedFileName = `tmp_${safeBaseName}.txt`;
-        const patchedInputPath = path.resolve(workDir, patchedFileName);
-        fs.writeFileSync(patchedInputPath, lines.join('\n'));
-        
-        inputPath = patchedInputPath;
-        extractedVer = '8.5';
-        appendLog(`[INFO] Created localized runtime input buffer with updated header version: "${extractedVer}"`);
+
+        const tempFileName = `temp_${safeBaseName}.txt`;
+        workingInputPath = path.resolve(workDir, tempFileName);
+        fs.writeFileSync(workingInputPath, lines.join('\n'));
+        tempBufferCreated = true;
+        appendLog(`[INFO] Created localized execution buffer: ${tempFileName}`);
       }
     }
   } catch (err) {
-    appendLog(`[WARN] Header analysis failed: ${err.message}`);
+    appendLog(`[WARN] Header buffer creation note: ${err.message}`);
   }
 
-  // Version Arguments Sequence To Try
-  const versionsToTry = [];
-  if (extractedVer) versionsToTry.push(extractedVer);
-  versionsToTry.push('8.5', 'Protean RPU 8.5', '8.6', 'Protean RPU 1.2', '1.2');
+  // Version Argument Options for Standalone JAR
+  const versionsToTry = [
+    "Protean RPU 8.5",
+    "8.5",
+    "",
+    "Protean RPU 1.2",
+    "1.2"
+  ];
 
-  const uniqueVersions = [...new Set(versionsToTry)];
-
-  // Exclude VersionValidator.jar
+  // Classpath Configuration (Excludes VersionValidator.jar to prevent network calls)
   const jarFiles = fs.readdirSync(jarDir).filter(f => 
     f.endsWith('.jar') && 
     f !== 'TDS_STANDALONE_FVU_1.2.jar' && 
@@ -130,8 +115,9 @@ function run() {
   const tryExecute = (versionStr) => {
     const cleanVer = versionStr.replace(/"/g, '');
     
+    // Exact command syntax for com.tin.FVU.FVU
     const cmdArgs = [
-      `"${inputPath}"`,
+      `"${workingInputPath}"`,
       `"${errPath}"`,
       `"${fvuPath}"`,
       hasCsiFlag,
@@ -159,21 +145,6 @@ function run() {
       if (err.stderr && err.stderr.length) appendLog(`[STDERR]\n${err.stderr.toString('utf8')}`);
     }
 
-    const possibleLogPaths = [
-      path.resolve(process.cwd(), 'TDS_LOG.txt'),
-      path.resolve(jarDir, 'TDS_LOG.txt'),
-      path.resolve(jarDir, 'logs', 'TDS_LOG.txt')
-    ];
-
-    for (const logP of possibleLogPaths) {
-      if (fs.existsSync(logP)) {
-        try {
-          const lContent = fs.readFileSync(logP, 'utf8');
-          appendLog(`[INTERNAL_LOG: ${path.basename(logP)}]\n${lContent.trim()}`);
-        } catch (e) {}
-      }
-    }
-
     const fvuCreated = fs.existsSync(fvuPath);
     const errCreated = fs.existsSync(errPath);
 
@@ -188,7 +159,7 @@ function run() {
     }
 
     if (fvuCreated || errCreated) {
-      appendLog(`[STAGE: JAVA_EXECUTION_SUCCESS] Process output generated (FVU: ${fvuCreated}, ERR: ${errCreated}).`);
+      appendLog(`[STAGE: JAVA_EXECUTION_SUCCESS] Output generated (FVU: ${fvuCreated}, ERR: ${errCreated}).`);
       fs.writeFileSync(statusFilePath, "JAVA_EXEC_SUCCESS");
       return { success: true };
     }
@@ -198,15 +169,15 @@ function run() {
 
   let res = { success: false };
 
-  for (const ver of uniqueVersions) {
+  for (const ver of versionsToTry) {
     res = tryExecute(ver);
     if (res.success) break;
   }
 
-  // Cleanup temporary working file if generated
-  if (inputPath !== rawInputPath && fs.existsSync(inputPath)) {
+  // Cleanup temporary runtime file
+  if (tempBufferCreated && fs.existsSync(workingInputPath)) {
     try {
-      fs.unlinkSync(inputPath);
+      fs.unlinkSync(workingInputPath);
     } catch (e) {}
   }
 
