@@ -4,7 +4,7 @@ import { execSync } from 'child_process';
 
 function run() {
   console.log("=========================================================");
-  console.log("      FastFVU - Fixed Standalone Execution Engine        ");
+  console.log("      FastFVU - Header Precise Execution Engine          ");
   console.log("=========================================================");
 
   const workDir = path.resolve(process.cwd(), 'tmp_job');
@@ -51,42 +51,6 @@ function run() {
     }
   }
 
-  // Detect Header Version from File First Line
-  let originalDetectedHeader = '';
-  try {
-    if (fs.existsSync(rawInputPath)) {
-      const fileContent = fs.readFileSync(rawInputPath, 'utf8');
-      const lines = fileContent.split(/\r?\n/);
-      if (lines.length > 0) {
-        const parts = lines[0].split('^');
-        originalDetectedHeader = parts[9] ? parts[9].trim() : '';
-      }
-      appendLog(`[INFO] Original File Header Version: "${originalDetectedHeader}"`);
-    }
-  } catch (err) {
-    appendLog(`[WARN] Header detection note: ${err.message}`);
-  }
-
-  // Helper Function to Create Buffer File with Custom Header
-  const createBufferWithHeader = (headerVal) => {
-    try {
-      const fileContent = fs.readFileSync(rawInputPath, 'utf8');
-      const lines = fileContent.split(/\r?\n/);
-      const parts = lines[0].split('^');
-      parts[9] = headerVal;
-      lines[0] = parts.join('^');
-
-      const tempPath = path.resolve(workDir, `temp_${headerVal.replace(/\s+/g, '_')}_${safeBaseName}.txt`);
-      fs.writeFileSync(tempPath, lines.join('\n'));
-      return tempPath;
-    } catch (e) {
-      return rawInputPath;
-    }
-  };
-
-  const bufferRpu85Path = createBufferWithHeader('Protean RPU 8.5');
-  const bufferRpu12Path = createBufferWithHeader('1.2');
-
   // Classpath Configuration
   const jarFiles = fs.readdirSync(jarDir).filter(f => 
     f.endsWith('.jar') && 
@@ -110,29 +74,20 @@ function run() {
     '--add-opens=java.base/java.io=ALL-UNNAMED'
   ].join(' ');
 
-  // Prioritized Configurations with Strict Header-Arg Synchronization
-  const executionConfigs = [
-    { targetPath: bufferRpu85Path, verStr: "Protean RPU 8.5" },
-    { targetPath: bufferRpu85Path, verStr: "8.5" },
-    { targetPath: rawInputPath, verStr: originalDetectedHeader },
-    { targetPath: bufferRpu12Path, verStr: "1.2" }
-  ];
-
-  const tryExecute = (inputPath, versionStr) => {
-    const cleanVer = versionStr ? versionStr.replace(/"/g, '') : '';
-    
+  // Standard Execution Strategy using exact uploaded text file
+  const tryExecute = (versionArg) => {
     const cmdArgs = [
-      `"${inputPath}"`,
+      `"${rawInputPath}"`,
       `"${errPath}"`,
       `"${fvuPath}"`,
       hasCsiFlag,
       csiPath === '0' ? '0' : `"${csiPath}"`,
       '0',
-      `"${cleanVer}"`
+      `"${versionArg}"`
     ];
 
     const cmd = `java ${javaOptions} -cp "${cpString}" com.tin.FVU.FVU ${cmdArgs.join(' ')}`;
-    appendLog(`\n[EXEC_CMD] ${cmd}`);
+    appendLog(`\n[EXEC_CMD - Arg Version: "${versionArg}"] ${cmd}`);
     
     if (fs.existsSync(errPath)) fs.unlinkSync(errPath);
     if (fs.existsSync(fvuPath)) fs.unlinkSync(fvuPath);
@@ -172,19 +127,14 @@ function run() {
     return { success: false };
   };
 
+  // Try standard parameters for Standalone 1.2 JAR
+  const versionArgsToTry = ["8.5", "1.2", "8.4", "1.0", ""];
   let res = { success: false };
 
-  for (const config of executionConfigs) {
-    res = tryExecute(config.targetPath, config.verStr);
+  for (const verArg of versionArgsToTry) {
+    res = tryExecute(verArg);
     if (res.success) break;
   }
-
-  // Cleanup temporary buffers
-  [bufferRpu85Path, bufferRpu12Path].forEach(bufPath => {
-    if (bufPath !== rawInputPath && fs.existsSync(bufPath)) {
-      try { fs.unlinkSync(bufPath); } catch (e) {}
-    }
-  });
 
   if (!res.success) {
     appendLog(`\n[STAGE: JAVA_EXECUTION_FAILURE] Execution complete without output files.`);
