@@ -4,7 +4,7 @@ import { execSync } from 'child_process';
 
 function run() {
   console.log("=========================================================");
-  console.log("      FastFVU - Offline Standalone Engine                ");
+  console.log("      FastFVU - Fixed Standalone Execution Engine        ");
   console.log("=========================================================");
 
   const workDir = path.resolve(process.cwd(), 'tmp_job');
@@ -42,6 +42,47 @@ function run() {
   const fvuPath = path.resolve(workDir, `${safeBaseName}.fvu`);
   const csiPath = (csiFileName && csiFileName !== '0') ? path.resolve(workDir, csiFileName) : '0';
 
+  // -------------------------------------------------------------
+  // Dynamic Header Extraction (10th Field / Index 9)
+  // -------------------------------------------------------------
+  let extractedVer = null;
+  try {
+    if (fs.existsSync(inputPath)) {
+      const fileContent = fs.readFileSync(inputPath, 'utf8');
+      const firstLine = fileContent.split('\n')[0];
+      const parts = firstLine.split('^');
+      
+      // 1. Direct Index 9 (10th Field) matching input header
+      if (parts.length > 9 && parts[9] && parts[9].trim() !== '') {
+        extractedVer = parts[9].trim();
+      }
+
+      // 2. Keyword Search Fallback if index shift occurs
+      if (!extractedVer) {
+        for (const part of parts) {
+          const trimmed = part.trim();
+          if (trimmed.includes('RPU') || trimmed.includes('FVU')) {
+            extractedVer = trimmed;
+            break;
+          }
+        }
+      }
+
+      if (extractedVer) {
+        appendLog(`[INFO] Extracted RPU Header Version: "${extractedVer}"`);
+      }
+    }
+  } catch (err) {
+    appendLog(`[WARN] Failed to read header line: ${err.message}`);
+  }
+
+  // Priority queue: Head version extracted from file, followed by exact string fallback
+  const versionsToTry = [];
+  if (extractedVer) versionsToTry.push(extractedVer);
+  versionsToTry.push('Protean RPU 1.2', '1.2');
+
+  const uniqueVersions = [...new Set(versionsToTry)];
+
   const baseArgs = [
     `"${inputPath}"`,
     `"${errPath}"`,
@@ -51,7 +92,7 @@ function run() {
     '0'
   ];
 
-  // REMOVE VersionValidator.jar to prevent online validation failures!
+  // Exclude VersionValidator.jar to prevent network blockages during execution
   const jarFiles = fs.readdirSync(jarDir).filter(f => 
     f.endsWith('.jar') && 
     f !== 'TDS_STANDALONE_FVU_1.2.jar' && 
@@ -73,9 +114,6 @@ function run() {
     '--add-opens=java.base/java.text=ALL-UNNAMED',
     '--add-opens=java.base/java.io=ALL-UNNAMED'
   ].join(' ');
-
-  // Standard FVU version arguments accepted by Protean Standalone Jar
-  const versionsToTry = ['8.9', '1.2', '1', '7.4'];
 
   const tryExecute = (cmd) => {
     appendLog(`\n[EXEC_CMD] ${cmd}`);
@@ -128,8 +166,9 @@ function run() {
 
   let res = { success: false };
 
-  for (const ver of versionsToTry) {
-    const vArg = ` "${ver}"`;
+  for (const ver of uniqueVersions) {
+    const cleanVer = ver.replace(/"/g, '');
+    const vArg = ` "${cleanVer}"`;
     const cmd = `java ${javaOptions} -cp "${cpString}" com.tin.FVU.FVU ${baseArgs.join(' ')}${vArg}`;
     res = tryExecute(cmd);
     if (res.success) break;
