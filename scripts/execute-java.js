@@ -51,45 +51,25 @@ function run() {
     }
   }
 
-  // File Preparation without modifying the original input file
-  let workingInputPath = rawInputPath;
-  let tempBufferCreated = false;
-
+  // Detect Version String dynamically from 1st line (FH Record)
+  let detectedVersion = 'Protean RPU 1.2'; // Default fallback
   try {
     if (fs.existsSync(rawInputPath)) {
       const fileContent = fs.readFileSync(rawInputPath, 'utf8');
-      const lines = fileContent.split(/\r?\n/);
-      const firstLine = lines[0];
+      const firstLine = fileContent.split(/\r?\n/)[0];
       const parts = firstLine.split('^');
-
-      appendLog(`[INFO] Original File Header Version: "${parts[9] || ''}"`);
-
-      // Standalone JAR expects standard RPU Header in position 10 during parsing
-      if (parts[9] && (parts[9].includes('Protean RPU 1.2') || parts[9] === '1.2')) {
-        parts[9] = 'Protean RPU 8.5'; // Standard header compatible with Standalone parser
-        lines[0] = parts.join('^');
-
-        const tempFileName = `temp_${safeBaseName}.txt`;
-        workingInputPath = path.resolve(workDir, tempFileName);
-        fs.writeFileSync(workingInputPath, lines.join('\n'));
-        tempBufferCreated = true;
-        appendLog(`[INFO] Created localized execution buffer: ${tempFileName}`);
+      
+      // Field index 9 is the 10th position in FH record
+      if (parts[9] && parts[9].trim() !== '') {
+        detectedVersion = parts[9].trim();
       }
+      appendLog(`[INFO] Detected File Header Version: "${detectedVersion}"`);
     }
   } catch (err) {
-    appendLog(`[WARN] Header buffer creation note: ${err.message}`);
+    appendLog(`[WARN] Error reading input header: ${err.message}`);
   }
 
-  // Version Argument Options for Standalone JAR
-  const versionsToTry = [
-    "Protean RPU 8.5",
-    "8.5",
-    "",
-    "Protean RPU 1.2",
-    "1.2"
-  ];
-
-  // Classpath Configuration (Excludes VersionValidator.jar to prevent network calls)
+  // Classpath Configuration (Excludes VersionValidator to prevent network calls)
   const jarFiles = fs.readdirSync(jarDir).filter(f => 
     f.endsWith('.jar') && 
     f !== 'TDS_STANDALONE_FVU_1.2.jar' && 
@@ -112,12 +92,20 @@ function run() {
     '--add-opens=java.base/java.io=ALL-UNNAMED'
   ].join(' ');
 
+  // Dynamic versions array prioritizing the exact detected version
+  const versionsToTry = [
+    detectedVersion,
+    "Protean RPU 1.2",
+    "1.2",
+    ""
+  ];
+
   const tryExecute = (versionStr) => {
     const cleanVer = versionStr.replace(/"/g, '');
     
-    // Exact command syntax for com.tin.FVU.FVU
+    // Exact command syntax matching com.tin.FVU.FVU signature
     const cmdArgs = [
-      `"${workingInputPath}"`,
+      `"${rawInputPath}"`,
       `"${errPath}"`,
       `"${fvuPath}"`,
       hasCsiFlag,
@@ -169,16 +157,10 @@ function run() {
 
   let res = { success: false };
 
+  // Try execution using the detected version list
   for (const ver of versionsToTry) {
     res = tryExecute(ver);
     if (res.success) break;
-  }
-
-  // Cleanup temporary runtime file
-  if (tempBufferCreated && fs.existsSync(workingInputPath)) {
-    try {
-      fs.unlinkSync(workingInputPath);
-    } catch (e) {}
   }
 
   if (!res.success) {
