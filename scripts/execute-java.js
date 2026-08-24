@@ -4,7 +4,7 @@ import { execSync } from 'child_process';
 
 function run() {
   console.log("=========================================================");
-  console.log("      FastFVU - Fixed Standalone Execution Engine        ");
+  console.log("      FastFVU - Deep Diagnostic Execution Engine         ");
   console.log("=========================================================");
 
   const workDir = path.resolve(process.cwd(), 'tmp_job');
@@ -40,7 +40,17 @@ function run() {
   const inputPath = path.resolve(workDir, fileName);
   const errPath = path.resolve(workDir, `${safeBaseName}.err`);
   const fvuPath = path.resolve(workDir, `${safeBaseName}.fvu`);
-  const csiPath = (csiFileName && csiFileName !== '0') ? path.resolve(workDir, csiFileName) : '0';
+  
+  // Resolve CSI Path accurately
+  let csiPath = '0';
+  if (csiFileName && csiFileName !== '0') {
+    const candidateCsi = path.resolve(workDir, csiFileName);
+    if (fs.existsSync(candidateCsi)) {
+      csiPath = candidateCsi;
+    } else {
+      appendLog(`[WARN] Specified CSI file not found on disk: ${candidateCsi}`);
+    }
+  }
 
   // -------------------------------------------------------------
   // Dynamic Header Extraction (10th Field / Index 9)
@@ -52,12 +62,12 @@ function run() {
       const firstLine = fileContent.split('\n')[0];
       const parts = firstLine.split('^');
       
-      // 1. Direct Index 9 (10th Field) matching input header
+      // 1. Direct Index 9 (10th Field)
       if (parts.length > 9 && parts[9] && parts[9].trim() !== '') {
         extractedVer = parts[9].trim();
       }
 
-      // 2. Keyword Search Fallback if index shift occurs
+      // 2. Fallback search
       if (!extractedVer) {
         for (const part of parts) {
           const trimmed = part.trim();
@@ -76,7 +86,6 @@ function run() {
     appendLog(`[WARN] Failed to read header line: ${err.message}`);
   }
 
-  // Priority queue: Head version extracted from file, followed by exact string fallback
   const versionsToTry = [];
   if (extractedVer) versionsToTry.push(extractedVer);
   versionsToTry.push('Protean RPU 1.2', '1.2');
@@ -92,7 +101,7 @@ function run() {
     '0'
   ];
 
-  // Exclude VersionValidator.jar to prevent network blockages during execution
+  // Exclude VersionValidator.jar
   const jarFiles = fs.readdirSync(jarDir).filter(f => 
     f.endsWith('.jar') && 
     f !== 'TDS_STANDALONE_FVU_1.2.jar' && 
@@ -120,6 +129,8 @@ function run() {
     
     if (fs.existsSync(errPath)) fs.unlinkSync(errPath);
     if (fs.existsSync(fvuPath)) fs.unlinkSync(fvuPath);
+    
+    // Clear log directory files before execution
     const tdsLogFile = path.join(fvuLogsDir, 'TDS_LOG.txt');
     if (fs.existsSync(tdsLogFile)) fs.unlinkSync(tdsLogFile);
 
@@ -136,6 +147,15 @@ function run() {
       if (err.stderr && err.stderr.length) appendLog(`[STDERR]\n${err.stderr.toString('utf8')}`);
     }
 
+    // Capture log files generated in working directory as well
+    const rootTdsLog = path.resolve(process.cwd(), 'TDS_LOG.txt');
+    if (fs.existsSync(rootTdsLog)) {
+      try {
+        const rootLogContent = fs.readFileSync(rootTdsLog, 'utf8');
+        appendLog(`[ROOT_TDS_LOG]\n${rootLogContent.trim()}`);
+      } catch (e) {}
+    }
+
     if (fs.existsSync(tdsLogFile)) {
       try {
         const internalLog = fs.readFileSync(tdsLogFile, 'utf8');
@@ -149,7 +169,7 @@ function run() {
     if (errCreated) {
       try {
         const errContent = fs.readFileSync(errPath, 'utf8');
-        appendLog(`[ERR_CONTENT]\n${errContent.trim()}`);
+        appendLog(`[ERR_FILE_CONTENT]\n${errContent.trim()}`);
         if (errContent.includes("Incorrect FVU Version of JAR")) {
           return { success: false };
         }
@@ -157,7 +177,7 @@ function run() {
     }
 
     if (fvuCreated || errCreated) {
-      appendLog(`[STAGE: JAVA_EXECUTION_SUCCESS] Output generated.`);
+      appendLog(`[STAGE: JAVA_EXECUTION_SUCCESS] Generated output. (FVU: ${fvuCreated}, ERR: ${errCreated})`);
       fs.writeFileSync(statusFilePath, "JAVA_EXEC_SUCCESS");
       return { success: true };
     }
@@ -175,7 +195,7 @@ function run() {
   }
 
   if (!res.success) {
-    appendLog(`\n[STAGE: JAVA_EXECUTION_FAILURE] Check internal logs above.`);
+    appendLog(`\n[STAGE: JAVA_EXECUTION_FAILURE] Could not generate .fvu or .err files.`);
     fs.writeFileSync(statusFilePath, "JAVA_EXEC_FAILED");
   }
 }
