@@ -4,7 +4,7 @@ import { execSync } from 'child_process';
 
 function run() {
   console.log("=========================================================");
-  console.log("      FastFVU - Final Execution Engine with Correct Version");
+  console.log("      FastFVU - Form 140 Execution Engine (Offline Compatible)");
   console.log("=========================================================");
 
   const workDir = path.resolve(process.cwd(), 'tmp_job');
@@ -57,6 +57,7 @@ function run() {
   const javaOptions = [
     '-Dfile.encoding=UTF-8',
     '-Djava.awt.headless=true',
+    '-Djsse.enableSNIExtension=false',
     '--add-modules=jdk.unsupported',
     '--add-exports=jdk.unsupported/sun.misc=ALL-UNNAMED',
     '--add-opens=java.base/java.lang=ALL-UNNAMED',
@@ -66,12 +67,11 @@ function run() {
     '--add-opens=java.base/java.io=ALL-UNNAMED'
   ].join(' ');
 
-  // Standard string formats required by VersionValidator for standalone 1.2 JAR
+  // List of candidate version strings to match header & offline validation
   const versionsToTry = [
-    'FVU 1.2',
     'Protean RPU 1.2',
-    '1.2.0',
     '1.2',
+    '1',
     '8.9'
   ];
 
