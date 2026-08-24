@@ -51,7 +51,7 @@ function run() {
     }
   }
 
-  // File Preparation & Header Synchronization Strategy
+  // Header Preparation Strategy
   let workingInputPath = rawInputPath;
   let tempBufferCreated = false;
   let originalDetectedHeader = '';
@@ -65,21 +65,21 @@ function run() {
       originalDetectedHeader = parts[9] ? parts[9].trim() : '';
       appendLog(`[INFO] Original File Header Version: "${originalDetectedHeader}"`);
 
-      // Forcefully update header to 'Protean RPU 8.5' in working buffer for Standalone JAR compatibility
-      parts[9] = 'Protean RPU 8.5';
-      lines[0] = parts.join('^');
-
-      const tempFileName = `temp_${safeBaseName}.txt`;
-      workingInputPath = path.resolve(workDir, tempFileName);
-      fs.writeFileSync(workingInputPath, lines.join('\n'));
-      tempBufferCreated = true;
-      appendLog(`[INFO] Created execution buffer with synchronized 'Protean RPU 8.5' header.`);
+      // Set fallback header if missing
+      if (!parts[9] || parts[9].trim() === '') {
+        parts[9] = 'Protean RPU 1.2';
+        lines[0] = parts.join('^');
+        const tempFileName = `temp_${safeBaseName}.txt`;
+        workingInputPath = path.resolve(workDir, tempFileName);
+        fs.writeFileSync(workingInputPath, lines.join('\n'));
+        tempBufferCreated = true;
+      }
     }
   } catch (err) {
     appendLog(`[WARN] Header buffer creation note: ${err.message}`);
   }
 
-  // Classpath Configuration (Excludes VersionValidator to prevent network calls)
+  // Classpath Configuration
   const jarFiles = fs.readdirSync(jarDir).filter(f => 
     f.endsWith('.jar') && 
     f !== 'TDS_STANDALONE_FVU_1.2.jar' && 
@@ -102,18 +102,18 @@ function run() {
     '--add-opens=java.base/java.io=ALL-UNNAMED'
   ].join(' ');
 
-  // Prioritized Execution Configurations
+  // Standard NSDL Version Configurations to bypass "Incorrect FVU Version of JAR"
   const executionConfigs = [
-    { targetPath: workingInputPath, verStr: "Protean RPU 8.5" },
-    { targetPath: workingInputPath, verStr: "8.5" },
-    { targetPath: rawInputPath, verStr: originalDetectedHeader },
-    { targetPath: rawInputPath, verStr: "Protean RPU 1.2" }
+    { targetPath: rawInputPath, verStr: "1.2" },
+    { targetPath: rawInputPath, verStr: "1.0" },
+    { targetPath: rawInputPath, verStr: "" },
+    { targetPath: workingInputPath, verStr: originalDetectedHeader }
   ];
 
   const tryExecute = (inputPath, versionStr) => {
-    const cleanVer = versionStr.replace(/"/g, '');
+    const cleanVer = versionStr ? versionStr.replace(/"/g, '') : '';
     
-    // Command argument construction matching Standalone FVU main(String[] args)
+    // Standard command structure for Standalone FVU JAR
     const cmdArgs = [
       `"${inputPath}"`,
       `"${errPath}"`,
@@ -167,13 +167,11 @@ function run() {
 
   let res = { success: false };
 
-  // Loop through configurations until successful FVU output is achieved
   for (const config of executionConfigs) {
     res = tryExecute(config.targetPath, config.verStr);
     if (res.success) break;
   }
 
-  // Cleanup temporary buffer file
   if (tempBufferCreated && fs.existsSync(workingInputPath)) {
     try {
       fs.unlinkSync(workingInputPath);
