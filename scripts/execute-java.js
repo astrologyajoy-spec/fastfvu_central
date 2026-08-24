@@ -4,7 +4,7 @@ import { execSync } from 'child_process';
 
 function run() {
   console.log("=========================================================");
-  console.log("      FastFVU - Java 17 Module & Headless Fix Engine     ");
+  console.log("      FastFVU - Dynamic JAR & Version Matcher Engine     ");
   console.log("=========================================================");
 
   const workDir = path.resolve(process.cwd(), 'tmp_job');
@@ -26,15 +26,26 @@ function run() {
     jarDir = path.resolve(process.cwd(), 'bin');
   }
 
-  // Log directory create for Log4j
-  fs.mkdirSync(path.join(jarDir, 'logs'), { recursive: true });
+  const fvuLogsDir = path.join(jarDir, 'logs');
+  fs.mkdirSync(fvuLogsDir, { recursive: true });
 
-  const mainJarPath = path.join(jarDir, 'TDS_STANDALONE_FVU_1.2.jar');
-  if (!fs.existsSync(mainJarPath)) {
-    appendLog(`[ERROR] Primary JAR not found at ${mainJarPath}`);
+  const allJars = fs.readdirSync(jarDir).filter(f => f.endsWith('.jar'));
+
+  // Standalone FVU JAR ডাইনামিকালি শনাক্ত করা (যেমন TDS_STANDALONE_FVU_8.9.jar বা অন্য যেকোনো ভার্সন)
+  const mainJarName = allJars.find(f => f.startsWith('TDS_STANDALONE_FVU') || f.startsWith('TDS_FVU')) || allJars.find(f => f.includes('FVU'));
+
+  if (!mainJarName) {
+    appendLog(`[ERROR] No Standalone FVU JAR found in ${jarDir}`);
     fs.writeFileSync(statusFilePath, "JAVA_EXEC_FAILED");
     process.exit(0);
   }
+
+  appendLog(`[INFO] Active Target Main JAR: ${mainJarName}`);
+
+  // JAR ফাইলের নাম থেকে অটো-ভার্সন এক্সট্র্যাক্ট (যেমন 8.9)
+  const verMatch = mainJarName.match(/(\d+\.\d+(\.\d+)?)/);
+  const detectedVer = verMatch ? verMatch[1] : '8.9';
+  appendLog(`[INFO] Auto-Detected FVU Version: ${detectedVer}`);
 
   const safeBaseName = fileName.replace(/[^a-zA-Z0-9._-]/g, '_').replace(/\.[^/.]+$/, '');
   const inputPath = path.resolve(workDir, fileName);
@@ -51,28 +62,33 @@ function run() {
     '0'
   ];
 
-  const allJars = fs.readdirSync(jarDir).filter(f => f.endsWith('.jar'));
-  const cpString = allJars.join(':') + ':.';
+  // Classpath-এ Main JAR সবার প্রথমে রাখা আবশ্যক
+  const otherJars = allJars.filter(j => j !== mainJarName);
+  const sortedJars = [mainJarName, ...otherJars];
+  const cpString = sortedJars.map(j => path.join(jarDir, j)).join(':') + ':' + jarDir;
 
-  // Java 17 JVM Options for NSDL Standalone FVU
   const javaOptions = [
     '-Dfile.encoding=UTF-8',
     '-Djava.awt.headless=true',
     '--add-modules=jdk.unsupported',
     '--add-exports=jdk.unsupported/sun.misc=ALL-UNNAMED',
     '--add-opens=java.base/java.lang=ALL-UNNAMED',
+    '--add-opens=java.base/java.lang.reflect=ALL-UNNAMED',
     '--add-opens=java.base/java.util=ALL-UNNAMED',
-    '--add-opens=java.base/java.text=ALL-UNNAMED'
+    '--add-opens=java.base/java.text=ALL-UNNAMED',
+    '--add-opens=java.base/java.io=ALL-UNNAMED'
   ].join(' ');
 
-  const versionsToTry = ['1.2', '8.9', '1'];
+  // Detected Version আগে ট্রাই করা হবে
+  const versionsToTry = Array.from(new Set([detectedVer, '8.9', '8.8', '8.7', '1.2', '1', '']));
 
   const tryExecute = (cmd) => {
     appendLog(`\n[EXEC_CMD] ${cmd}`);
-    try {
-      if (fs.existsSync(errPath)) fs.unlinkSync(errPath);
-      if (fs.existsSync(fvuPath)) fs.unlinkSync(fvuPath);
+    
+    if (fs.existsSync(errPath)) fs.unlinkSync(errPath);
+    if (fs.existsSync(fvuPath)) fs.unlinkSync(fvuPath);
 
+    try {
       const output = execSync(cmd, { 
         cwd: jarDir,
         stdio: 'pipe', 
@@ -99,7 +115,7 @@ function run() {
     }
 
     if (fvuCreated || errCreated) {
-      appendLog(`[STAGE: JAVA_EXECUTION_SUCCESS] FVU process completed.`);
+      appendLog(`[STAGE: JAVA_EXECUTION_SUCCESS] Output generated successfully.`);
       fs.writeFileSync(statusFilePath, "JAVA_EXEC_SUCCESS");
       return { success: true };
     }
@@ -116,7 +132,7 @@ function run() {
   }
 
   if (!res.success) {
-    appendLog(`\n[STAGE: JAVA_EXECUTION_FAILURE] Could not complete FVU validation.`);
+    appendLog(`\n[STAGE: JAVA_EXECUTION_FAILURE] Execution failed.`);
     fs.writeFileSync(statusFilePath, "JAVA_EXEC_FAILED");
   }
 }
