@@ -51,33 +51,41 @@ function run() {
     }
   }
 
-  // Header Preparation Strategy
-  let workingInputPath = rawInputPath;
-  let tempBufferCreated = false;
+  // Detect Header Version from File First Line
   let originalDetectedHeader = '';
-
   try {
     if (fs.existsSync(rawInputPath)) {
       const fileContent = fs.readFileSync(rawInputPath, 'utf8');
       const lines = fileContent.split(/\r?\n/);
-      const parts = lines[0].split('^');
-
-      originalDetectedHeader = parts[9] ? parts[9].trim() : '';
-      appendLog(`[INFO] Original File Header Version: "${originalDetectedHeader}"`);
-
-      // Set fallback header if missing
-      if (!parts[9] || parts[9].trim() === '') {
-        parts[9] = 'Protean RPU 1.2';
-        lines[0] = parts.join('^');
-        const tempFileName = `temp_${safeBaseName}.txt`;
-        workingInputPath = path.resolve(workDir, tempFileName);
-        fs.writeFileSync(workingInputPath, lines.join('\n'));
-        tempBufferCreated = true;
+      if (lines.length > 0) {
+        const parts = lines[0].split('^');
+        originalDetectedHeader = parts[9] ? parts[9].trim() : '';
       }
+      appendLog(`[INFO] Original File Header Version: "${originalDetectedHeader}"`);
     }
   } catch (err) {
-    appendLog(`[WARN] Header buffer creation note: ${err.message}`);
+    appendLog(`[WARN] Header detection note: ${err.message}`);
   }
+
+  // Helper Function to Create Buffer File with Custom Header
+  const createBufferWithHeader = (headerVal) => {
+    try {
+      const fileContent = fs.readFileSync(rawInputPath, 'utf8');
+      const lines = fileContent.split(/\r?\n/);
+      const parts = lines[0].split('^');
+      parts[9] = headerVal;
+      lines[0] = parts.join('^');
+
+      const tempPath = path.resolve(workDir, `temp_${headerVal.replace(/\s+/g, '_')}_${safeBaseName}.txt`);
+      fs.writeFileSync(tempPath, lines.join('\n'));
+      return tempPath;
+    } catch (e) {
+      return rawInputPath;
+    }
+  };
+
+  const bufferRpu85Path = createBufferWithHeader('Protean RPU 8.5');
+  const bufferRpu12Path = createBufferWithHeader('1.2');
 
   // Classpath Configuration
   const jarFiles = fs.readdirSync(jarDir).filter(f => 
@@ -102,18 +110,17 @@ function run() {
     '--add-opens=java.base/java.io=ALL-UNNAMED'
   ].join(' ');
 
-  // Standard NSDL Version Configurations to bypass "Incorrect FVU Version of JAR"
+  // Prioritized Configurations with Strict Header-Arg Synchronization
   const executionConfigs = [
-    { targetPath: rawInputPath, verStr: "1.2" },
-    { targetPath: rawInputPath, verStr: "1.0" },
-    { targetPath: rawInputPath, verStr: "" },
-    { targetPath: workingInputPath, verStr: originalDetectedHeader }
+    { targetPath: bufferRpu85Path, verStr: "Protean RPU 8.5" },
+    { targetPath: bufferRpu85Path, verStr: "8.5" },
+    { targetPath: rawInputPath, verStr: originalDetectedHeader },
+    { targetPath: bufferRpu12Path, verStr: "1.2" }
   ];
 
   const tryExecute = (inputPath, versionStr) => {
     const cleanVer = versionStr ? versionStr.replace(/"/g, '') : '';
     
-    // Standard command structure for Standalone FVU JAR
     const cmdArgs = [
       `"${inputPath}"`,
       `"${errPath}"`,
@@ -172,11 +179,12 @@ function run() {
     if (res.success) break;
   }
 
-  if (tempBufferCreated && fs.existsSync(workingInputPath)) {
-    try {
-      fs.unlinkSync(workingInputPath);
-    } catch (e) {}
-  }
+  // Cleanup temporary buffers
+  [bufferRpu85Path, bufferRpu12Path].forEach(bufPath => {
+    if (bufPath !== rawInputPath && fs.existsSync(bufPath)) {
+      try { fs.unlinkSync(bufPath); } catch (e) {}
+    }
+  });
 
   if (!res.success) {
     appendLog(`\n[STAGE: JAVA_EXECUTION_FAILURE] Execution complete without output files.`);
