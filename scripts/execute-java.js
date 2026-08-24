@@ -34,7 +34,7 @@ function run() {
   }
 
   const safeBaseName = fileName.replace(/[^a-zA-Z0-9._-]/g, '_').replace(/\.[^/.]+$/, '');
-  const inputPath = path.resolve(workDir, fileName);
+  const rawInputPath = path.resolve(workDir, fileName);
   const errPath = path.resolve(workDir, `${safeBaseName}.err`);
   const fvuPath = path.resolve(workDir, `${safeBaseName}.fvu`);
 
@@ -45,20 +45,23 @@ function run() {
     const candidateCsi = path.resolve(workDir, csiFileName);
     if (fs.existsSync(candidateCsi)) {
       csiPath = candidateCsi;
-      hasCsiFlag = '1'; // Standard Standalone Flag when CSI exists
+      hasCsiFlag = '1';
     } else {
       appendLog(`[WARN] Specified CSI file not found on disk: ${candidateCsi}`);
     }
   }
 
-  // Header Extraction
+  // File Preparation & Dynamic Temporary Patching if Header Needs Alignment
+  let inputPath = rawInputPath;
   let extractedVer = null;
+
   try {
-    if (fs.existsSync(inputPath)) {
-      const fileContent = fs.readFileSync(inputPath, 'utf8');
-      const firstLine = fileContent.split('\n')[0];
+    if (fs.existsSync(rawInputPath)) {
+      let fileContent = fs.readFileSync(rawInputPath, 'utf8');
+      const lines = fileContent.split(/\r?\n/);
+      const firstLine = lines[0];
       const parts = firstLine.split('^');
-      
+
       if (parts.length > 9 && parts[9] && parts[9].trim() !== '') {
         extractedVer = parts[9].trim();
       }
@@ -73,17 +76,31 @@ function run() {
         }
       }
 
-      if (extractedVer) {
-        appendLog(`[INFO] Extracted RPU Header Version: "${extractedVer}"`);
+      appendLog(`[INFO] Original RPU Header Version: "${extractedVer}"`);
+
+      // If the header contains version incompatible with standalone jar execution, 
+      // create a normalized temporary working file without modifying original file.
+      if (extractedVer && (extractedVer.includes('Protean RPU 1.2') || extractedVer === '1.2')) {
+        parts[9] = '8.5';
+        lines[0] = parts.join('^');
+        
+        const patchedFileName = `tmp_${safeBaseName}.txt`;
+        const patchedInputPath = path.resolve(workDir, patchedFileName);
+        fs.writeFileSync(patchedInputPath, lines.join('\n'));
+        
+        inputPath = patchedInputPath;
+        extractedVer = '8.5';
+        appendLog(`[INFO] Created localized runtime input buffer with updated header version: "${extractedVer}"`);
       }
     }
   } catch (err) {
-    appendLog(`[WARN] Failed to read header line: ${err.message}`);
+    appendLog(`[WARN] Header analysis failed: ${err.message}`);
   }
 
+  // Version Arguments Sequence To Try
   const versionsToTry = [];
   if (extractedVer) versionsToTry.push(extractedVer);
-  versionsToTry.push('Protean RPU 1.2', '1.2');
+  versionsToTry.push('8.5', 'Protean RPU 8.5', '8.6', 'Protean RPU 1.2', '1.2');
 
   const uniqueVersions = [...new Set(versionsToTry)];
 
@@ -111,10 +128,8 @@ function run() {
   ].join(' ');
 
   const tryExecute = (versionStr) => {
-    // Clean string escaping and build positional parameters without double quotes
     const cleanVer = versionStr.replace(/"/g, '');
     
-    // Command positional args: input, err, fvu, hasCsiFlag, csiPath, 0, versionStr
     const cmdArgs = [
       `"${inputPath}"`,
       `"${errPath}"`,
@@ -133,7 +148,7 @@ function run() {
 
     try {
       const output = execSync(cmd, { 
-        cwd: process.cwd(), // Execute from Root Working Directory
+        cwd: process.cwd(),
         stdio: 'pipe', 
         timeout: 90000, 
         maxBuffer: 1024 * 1024 * 10 
@@ -144,7 +159,6 @@ function run() {
       if (err.stderr && err.stderr.length) appendLog(`[STDERR]\n${err.stderr.toString('utf8')}`);
     }
 
-    // Capture TDS internal logs if generated anywhere
     const possibleLogPaths = [
       path.resolve(process.cwd(), 'TDS_LOG.txt'),
       path.resolve(jarDir, 'TDS_LOG.txt'),
@@ -187,6 +201,13 @@ function run() {
   for (const ver of uniqueVersions) {
     res = tryExecute(ver);
     if (res.success) break;
+  }
+
+  // Cleanup temporary working file if generated
+  if (inputPath !== rawInputPath && fs.existsSync(inputPath)) {
+    try {
+      fs.unlinkSync(inputPath);
+    } catch (e) {}
   }
 
   if (!res.success) {
