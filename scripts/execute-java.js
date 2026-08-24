@@ -4,7 +4,7 @@ import { execSync } from 'child_process';
 
 function run() {
   console.log("=========================================================");
-  console.log("      FastFVU - Dynamic Input-based Version Execution    ");
+  console.log("      FastFVU - Final Execution Engine with Correct Version");
   console.log("=========================================================");
 
   const workDir = path.resolve(process.cwd(), 'tmp_job');
@@ -42,27 +42,6 @@ function run() {
   const fvuPath = path.resolve(workDir, `${safeBaseName}.fvu`);
   const csiPath = (csiFileName && csiFileName !== '0') ? path.resolve(workDir, csiFileName) : '0';
 
-  // -------------------------------------------------------------
-  // Dynamic Extraction of FVU Version directly from Input Text File
-  // -------------------------------------------------------------
-  let extractedVersion = null;
-  try {
-    const fileContent = fs.readFileSync(inputPath, 'utf8');
-    const firstLine = fileContent.split('\n')[0];
-    const fields = firstLine.split('^');
-    
-    // 10th field contains RPU/FVU Version Info (e.g., "Protean RPU 1.2" or "1.2")
-    if (fields.length >= 10 && fields[9]) {
-      const match = fields[9].match(/\d+(\.\d+)*/);
-      if (match) {
-        extractedVersion = match[0];
-        appendLog(`[INFO] Successfully extracted FVU version from Input File: ${extractedVersion}`);
-      }
-    }
-  } catch (e) {
-    appendLog(`[WARN] Could not parse input file header: ${e.message}`);
-  }
-
   const baseArgs = [
     `"${inputPath}"`,
     `"${errPath}"`,
@@ -87,14 +66,14 @@ function run() {
     '--add-opens=java.base/java.io=ALL-UNNAMED'
   ].join(' ');
 
-  // Try in priority order:
-  // 1. Version extracted directly from Text File header
-  // 2. Empty string (let Java read input file itself without overriding)
-  // 3. Hardcoded fallback "1.2"
-  const versionsToTry = [];
-  if (extractedVersion) versionsToTry.push(extractedVersion);
-  versionsToTry.push(""); // Critical: Pass no trailing version param
-  if (extractedVersion !== "1.2") versionsToTry.push("1.2");
+  // Standard string formats required by VersionValidator for standalone 1.2 JAR
+  const versionsToTry = [
+    'FVU 1.2',
+    'Protean RPU 1.2',
+    '1.2.0',
+    '1.2',
+    '8.9'
+  ];
 
   const tryExecute = (cmd) => {
     appendLog(`\n[EXEC_CMD] ${cmd}`);
@@ -148,7 +127,7 @@ function run() {
   let res = { success: false };
 
   for (const ver of versionsToTry) {
-    const vArg = ver !== "" ? ` ${ver}` : '';
+    const vArg = ` "${ver}"`;
     const cmd = `java ${javaOptions} -cp "${cpString}" com.tin.FVU.FVU ${baseArgs.join(' ')}${vArg}`;
     res = tryExecute(cmd);
     if (res.success) break;
