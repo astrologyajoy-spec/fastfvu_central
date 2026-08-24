@@ -4,7 +4,7 @@ import { execSync } from 'child_process';
 
 function run() {
   console.log("=========================================================");
-  console.log("      FastFVU - Form 140 Execution Engine (Offline Compatible)");
+  console.log("      FastFVU - Dynamic Header Version Engine            ");
   console.log("=========================================================");
 
   const workDir = path.resolve(process.cwd(), 'tmp_job');
@@ -42,6 +42,34 @@ function run() {
   const fvuPath = path.resolve(workDir, `${safeBaseName}.fvu`);
   const csiPath = (csiFileName && csiFileName !== '0') ? path.resolve(workDir, csiFileName) : '0';
 
+  // -------------------------------------------------------------
+  // Dynamic Version Extraction Logic from Input File (1st Line)
+  // -------------------------------------------------------------
+  let extractedVer = null;
+  try {
+    if (fs.existsSync(inputPath)) {
+      const fileContent = fs.readFileSync(inputPath, 'utf8');
+      const firstLine = fileContent.split('\n')[0];
+      const parts = firstLine.split('^');
+      
+      // Index 8 is the RPU/FVU Version position (e.g., "Protean RPU 1.2")
+      if (parts.length > 8 && parts[8] && parts[8].trim() !== '') {
+        extractedVer = parts[8].trim();
+        appendLog(`[INFO] Successfully extracted FVU version from Input File: ${extractedVer}`);
+      }
+    }
+  } catch (err) {
+    appendLog(`[WARN] Failed to read header line from input file: ${err.message}`);
+  }
+
+  // Fallback versions if extraction fails
+  const versionsToTry = [];
+  if (extractedVer) versionsToTry.push(extractedVer);
+  versionsToTry.push('Protean RPU 1.2', '1.2', '8.9');
+
+  // Filter unique values
+  const uniqueVersions = [...new Set(versionsToTry)];
+
   const baseArgs = [
     `"${inputPath}"`,
     `"${errPath}"`,
@@ -66,14 +94,6 @@ function run() {
     '--add-opens=java.base/java.text=ALL-UNNAMED',
     '--add-opens=java.base/java.io=ALL-UNNAMED'
   ].join(' ');
-
-  // List of candidate version strings to match header & offline validation
-  const versionsToTry = [
-    'Protean RPU 1.2',
-    '1.2',
-    '1',
-    '8.9'
-  ];
 
   const tryExecute = (cmd) => {
     appendLog(`\n[EXEC_CMD] ${cmd}`);
@@ -126,7 +146,7 @@ function run() {
 
   let res = { success: false };
 
-  for (const ver of versionsToTry) {
+  for (const ver of uniqueVersions) {
     const vArg = ` "${ver}"`;
     const cmd = `java ${javaOptions} -cp "${cpString}" com.tin.FVU.FVU ${baseArgs.join(' ')}${vArg}`;
     res = tryExecute(cmd);
