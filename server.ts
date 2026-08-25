@@ -54,11 +54,14 @@ app.use((req, res, next) => {
   res.header("Access-Control-Allow-Origin", "*");
   res.header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
   res.header("Access-Control-Allow-Headers", "Origin, X-Requested-With, Content-Type, Accept, Authorization, x-api-key");
+  res.setHeader("Cross-Origin-Opener-Policy", "same-origin-allow-popups");
   if (req.method === "OPTIONS") {
     return res.sendStatus(200);
   }
   next();
 });
+
+app.options('*all', cors());
 
 // Initialize Database Tables
 async function initDB() {
@@ -742,71 +745,93 @@ app.post(
         return;
       }
 
-      const txtPath = txtFile.path;
-      const csiPath = csiFile ? csiFile.path : "0";
-      const outDir = uploadDir;
-      const safeBaseName = txtFile.filename.replace(/\.[^/.]+$/, "");
+      // Read file contents
+      const txtContent = fs.readFileSync(txtFile.path, "utf8");
+      const csiContent = csiFile ? fs.readFileSync(csiFile.path, "utf8") : null;
       
-      const fvuPath = path.join(uploadDir, `${safeBaseName}.fvu`);
-      const errPath = path.join(uploadDir, `${safeBaseName}.err`);
-      const scriptPath = path.join(process.cwd(), "scripts", "automation.py");
+      const fileName = txtFile.originalname;
+      const csiFileName = csiFile ? csiFile.originalname : null;
+      
+      // Email could be passed via body
+      const email = req.body.email || "developer@fastfvu.central";
 
-      console.log(`[Generate-FVU] Spawning Python automation for: ${txtFile.originalname}`);
+      const startTime = Date.now();
+      const safeBaseName = fileName.replace(/[^a-zA-Z0-9._-]/g, '_').replace(/\.[^/.]+$/, "");
+      const expectedFvuFileName = `${safeBaseName}.fvu`;
+      const expectedErrFileName = `${safeBaseName}.err`;
+      const jobId = `${safeBaseName}_${startTime}`;
 
-      const pythonProcess = spawn("python3", [
-        scriptPath,
-        txtPath,
-        csiPath,
-        outDir,
-        fvuPath,
-        errPath
-      ]);
+      const githubPat = process.env.GITHUB_PAT_TOKEN || process.env.GITHUB_PAT || process.env.GITHUB_TOKEN;
+      const githubRepo = process.env.GITHUB_REPO || process.env.GITHUB_REPOSITORY || "astrologyajoy-spec/fastfvu_central";
 
-      let scriptOutput = "";
-      let scriptError = "";
-
-      pythonProcess.stdout.on("data", (data) => {
-        scriptOutput += data.toString();
-        console.log(`[Python - Generate FVU]: ${data.toString().trim()}`);
-      });
-
-      pythonProcess.stderr.on("data", (data) => {
-        scriptError += data.toString();
-        console.error(`[Python Error - Generate FVU]: ${data.toString().trim()}`);
-      });
-
-      pythonProcess.on("close", (code) => {
-        console.log(`[Generate-FVU] Python script finished with code ${code}`);
-
-        let resultData: any = {};
+      if (githubPat) {
         try {
-          const lines = scriptOutput.trim().split("\n");
-          resultData = JSON.parse(lines[lines.length - 1]);
-        } catch (e) {
-          console.warn("[Generate-FVU] Could not parse JSON from script output.");
-        }
+          const [owner, repo] = (githubRepo || "astrologyajoy-spec/fastfvu_central").split('/');
+          console.log(`[Generate-FVU] Triggering GitHub Actions dispatch for ${owner}/${repo} using Octokit...`);
 
-        const isFvuCreated = fs.existsSync(fvuPath);
-        const isErrCreated = fs.existsSync(errPath);
+          const { Octokit } = await import('@octokit/rest');
+          const octokit = new Octokit({ auth: githubPat });
 
-        if (isFvuCreated) {
-          res.download(fvuPath, `${txtFile.originalname.replace(/\.[^/.]+$/, "")}.fvu`, (err) => {
-            if (err) console.error("Download error:", err);
-            cleanupFiles([txtPath, csiPath, fvuPath, errPath].filter(p => p !== "0"));
+          await octokit.repos.createDispatchEvent({
+            owner,
+            repo,
+            event_type: "fvu_validation",
+            client_payload: {
+              fileName,
+              fileContent: txtContent,
+              csiFileName,
+              csiFileContent: csiContent,
+              email,
+              jobId
+            }
           });
-        } else if (isErrCreated) {
-          res.download(errPath, `${txtFile.originalname.replace(/\.[^/.]+$/, "")}.err`, (err) => {
-            if (err) console.error("Download error:", err);
-            cleanupFiles([txtPath, csiPath, fvuPath, errPath].filter(p => p !== "0"));
+
+          // Insert into TiDB as PENDING
+          try {
+            if (pool) {
+              const connection = await pool.getConnection();
+              try {
+                const [users]: any = await connection.query("SELECT id FROM users WHERE email = ?", [email]);
+                const userId = (users && users.length > 0) ? users[0].id : null;
+                await connection.query(
+                  "INSERT INTO fvu_logs (user_id, filename, csi_filename, output_filename, status) VALUES (?, ?, ?, ?, ?)",
+                  [userId, fileName, csiFileName || null, expectedFvuFileName, "PENDING"]
+                );
+              } finally {
+                connection.release();
+              }
+            }
+          } catch (e) {
+            console.warn("[Generate-FVU] DB log skipped:", e);
+          }
+
+          // Cleanup tmp files
+          cleanupFiles([txtFile.path, csiFile ? csiFile.path : "0"].filter(p => p !== "0"));
+
+          return res.json({
+            success: true,
+            status: "PENDING",
+            pending: true,
+            dispatchedToGithub: true,
+            jobId,
+            fileName,
+            fvuFileName: expectedFvuFileName,
+            errorFileName: expectedErrFileName,
+            message: "Validation job dispatched to GitHub Actions runner (Java 17). Polling for output report..."
           });
-        } else {
-          res.status(500).json({
-            error: "Failed to generate .fvu or .err file.",
-            details: resultData.message || scriptError || "Internal execution failure in Python bridge.",
-          });
-          cleanupFiles([txtPath, csiPath].filter(p => p !== "0"));
+
+        } catch (ghErr: any) {
+          const errMsg = ghErr?.message || String(ghErr);
+          const status = ghErr?.status || 400;
+          console.error(`[Generate-FVU] GitHub dispatch error:`, errMsg);
+          cleanupFiles([txtFile.path, csiFile ? csiFile.path : "0"].filter(p => p !== "0"));
+          return res.status(status).json({ error: "Failed to trigger GitHub Action: " + errMsg });
         }
-      });
+      } else {
+        cleanupFiles([txtFile.path, csiFile ? csiFile.path : "0"].filter(p => p !== "0"));
+        return res.status(500).json({ error: "GitHub PAT missing. Cannot dispatch to Vercel/GitHub Actions." });
+      }
+
     } catch (error: any) {
       console.error("[Generate-FVU] Unexpected error:", error);
       res.status(500).json({ error: "Internal server error during generation" });
@@ -826,7 +851,7 @@ async function startServer() {
   } else {
     const distPath = path.join(process.cwd(), 'dist');
     app.use(express.static(distPath));
-    app.get('*', (req, res) => {
+    app.get('*all', (req, res) => {
       res.sendFile(path.join(distPath, 'index.html'));
     });
   }
