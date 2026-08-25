@@ -6,6 +6,10 @@ import os from "os";
 import dotenv from "dotenv";
 import { OAuth2Client } from "google-auth-library";
 import { pool } from "./src/lib/db";
+import multer from "multer";
+import { spawn } from "child_process";
+import fs from "fs";
+import cors from "cors";
 
 dotenv.config();
 
@@ -14,9 +18,38 @@ const PORT = 3000;
 const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID || "517384935957-14rlq2ost4h9hmnv0l1ftm36lj434947.apps.googleusercontent.com";
 const googleClient = new OAuth2Client(GOOGLE_CLIENT_ID);
 
+app.use(cors());
 app.use(express.json());
 
-// CORS Middleware
+// Set up temporary storage for uploaded files for GUI automation
+const uploadDir = path.join(process.cwd(), "tmp_uploads");
+if (!fs.existsSync(uploadDir)) {
+  fs.mkdirSync(uploadDir, { recursive: true });
+}
+
+const storage = multer.diskStorage({
+  destination: (req, file, cb) => {
+    cb(null, uploadDir);
+  },
+  filename: (req, file, cb) => {
+    cb(null, `${Date.now()}_${file.originalname.replace(/[^a-zA-Z0-9._-]/g, "_")}`);
+  },
+});
+const upload = multer({ storage });
+
+const cleanupFiles = (files: string[]) => {
+  files.forEach((file) => {
+    if (fs.existsSync(file)) {
+      try {
+        fs.unlinkSync(file);
+      } catch (err) {
+        console.error(`Failed to delete file: ${file}`, err);
+      }
+    }
+  });
+};
+
+// CORS Middleware (backup/express)
 app.use((req, res, next) => {
   res.header("Access-Control-Allow-Origin", "*");
   res.header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
@@ -690,6 +723,96 @@ app.get("/api/v1/fvu/download", async (req, res) => {
     return res.status(200).json({ status: "PROCESSING", message: "Checking status..." });
   }
 });
+
+// GUI Automation FVU Endpoint (/api/generate-fvu)
+app.post(
+  "/api/generate-fvu",
+  upload.fields([
+    { name: "txtFile", maxCount: 1 },
+    { name: "csiFile", maxCount: 1 },
+  ]),
+  async (req, res) => {
+    try {
+      const files = req.files as { [fieldname: string]: Express.Multer.File[] };
+      const txtFile = files["txtFile"]?.[0];
+      const csiFile = files["csiFile"]?.[0];
+
+      if (!txtFile) {
+        res.status(400).json({ error: "Missing required .txt file" });
+        return;
+      }
+
+      const txtPath = txtFile.path;
+      const csiPath = csiFile ? csiFile.path : "0";
+      const outDir = uploadDir;
+      const safeBaseName = txtFile.filename.replace(/\.[^/.]+$/, "");
+      
+      const fvuPath = path.join(uploadDir, `${safeBaseName}.fvu`);
+      const errPath = path.join(uploadDir, `${safeBaseName}.err`);
+      const scriptPath = path.join(process.cwd(), "scripts", "automation.py");
+
+      console.log(`[Generate-FVU] Spawning Python automation for: ${txtFile.originalname}`);
+
+      const pythonProcess = spawn("python3", [
+        scriptPath,
+        txtPath,
+        csiPath,
+        outDir,
+        fvuPath,
+        errPath
+      ]);
+
+      let scriptOutput = "";
+      let scriptError = "";
+
+      pythonProcess.stdout.on("data", (data) => {
+        scriptOutput += data.toString();
+        console.log(`[Python - Generate FVU]: ${data.toString().trim()}`);
+      });
+
+      pythonProcess.stderr.on("data", (data) => {
+        scriptError += data.toString();
+        console.error(`[Python Error - Generate FVU]: ${data.toString().trim()}`);
+      });
+
+      pythonProcess.on("close", (code) => {
+        console.log(`[Generate-FVU] Python script finished with code ${code}`);
+
+        let resultData: any = {};
+        try {
+          const lines = scriptOutput.trim().split("\n");
+          resultData = JSON.parse(lines[lines.length - 1]);
+        } catch (e) {
+          console.warn("[Generate-FVU] Could not parse JSON from script output.");
+        }
+
+        const isFvuCreated = fs.existsSync(fvuPath);
+        const isErrCreated = fs.existsSync(errPath);
+
+        if (isFvuCreated) {
+          res.download(fvuPath, `${txtFile.originalname.replace(/\.[^/.]+$/, "")}.fvu`, (err) => {
+            if (err) console.error("Download error:", err);
+            cleanupFiles([txtPath, csiPath, fvuPath, errPath].filter(p => p !== "0"));
+          });
+        } else if (isErrCreated) {
+          res.download(errPath, `${txtFile.originalname.replace(/\.[^/.]+$/, "")}.err`, (err) => {
+            if (err) console.error("Download error:", err);
+            cleanupFiles([txtPath, csiPath, fvuPath, errPath].filter(p => p !== "0"));
+          });
+        } else {
+          res.status(500).json({
+            error: "Failed to generate .fvu or .err file.",
+            details: resultData.message || scriptError || "Internal execution failure in Python bridge.",
+          });
+          cleanupFiles([txtPath, csiPath].filter(p => p !== "0"));
+        }
+      });
+    } catch (error: any) {
+      console.error("[Generate-FVU] Unexpected error:", error);
+      res.status(500).json({ error: "Internal server error during generation" });
+    }
+  }
+);
 
 async function startServer() {
   await initDB();
