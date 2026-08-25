@@ -1,5 +1,5 @@
 import React from 'react';
-import { Terminal, Shield, Code, Share2, MessageSquare } from 'lucide-react';
+import { Terminal, Shield, Code, Twitter, Disc as Discord } from 'lucide-react';
 
 export function Footer() {
   return (
@@ -24,10 +24,10 @@ export function Footer() {
                 <Code className="w-4 h-4" />
               </a>
               <a href="#twitter" className="w-8 h-8 rounded-lg bg-slate-900 border border-slate-800 flex items-center justify-center text-slate-400 hover:text-white transition-colors">
-                <Share2 className="w-4 h-4" />
+                <Twitter className="w-4 h-4" />
               </a>
               <a href="#discord" className="w-8 h-8 rounded-lg bg-slate-900 border border-slate-800 flex items-center justify-center text-slate-400 hover:text-white transition-colors">
-                <MessageSquare className="w-4 h-4" />
+                <Discord className="w-4 h-4" />
               </a>
             </div>
           </div>
@@ -36,10 +36,10 @@ export function Footer() {
           <div>
             <h4 className="text-sm font-semibold text-white mb-4">Product</h4>
             <ul className="space-y-2.5 text-xs">
-              <li><a href="#features" className="hover:text-white transition-colors">Java Engine v4.2</a></li>
-              <li><a href="#playground" className="hover:text-white transition-colors">API Playground</a></li>
-              <li><a href="#pricing" className="hover:text-white transition-colors">Pricing Tiers</a></li>
-              <li><a href="#failover" className="hover:text-white transition-colors">Hybrid Failover</a></li>
+              <li><a href="#features" className="hover:text-white transition-colors">Features</a></li>
+              <li><a href="#pricing" className="hover:text-white transition-colors">Pricing</a></li>
+              <li><a href="#security" className="hover:text-white transition-colors">Security</a></li>
+              <li><a href="#enterprise" className="hover:text-white transition-colors">Enterprise</a></li>
             </ul>
           </div>
 
@@ -48,9 +48,8 @@ export function Footer() {
             <h4 className="text-sm font-semibold text-white mb-4">Developers</h4>
             <ul className="space-y-2.5 text-xs">
               <li><a href="#docs" className="hover:text-white transition-colors">Documentation</a></li>
-              <li><a href="#api" className="hover:text-white transition-colors">REST API Reference</a></li>
-              <li><a href="#sdk" className="hover:text-white transition-colors">SDK Libraries</a></li>
-              <li><a href="#status" className="hover:text-white transition-colors">System Status (99.99%)</a></li>
+              <li><a href="#api" className="hover:text-white transition-colors">API Reference</a></li>
+              <li><a href="#status" className="hover:text-white transition-colors">System Status</a></li>
             </ul>
           </div>
 
@@ -60,8 +59,7 @@ export function Footer() {
             <ul className="space-y-2.5 text-xs">
               <li><a href="#privacy" className="hover:text-white transition-colors">Privacy Policy</a></li>
               <li><a href="#terms" className="hover:text-white transition-colors">Terms of Service</a></li>
-              <li><a href="#security" className="hover:text-white transition-colors">Data Security Statement</a></li>
-              <li><a href="#compliance" className="hover:text-white transition-colors">Tax Compliance ISO</a></li>
+              <li><a href="#contact" className="hover:text-white transition-colors">Contact Us</a></li>
             </ul>
           </div>
 
