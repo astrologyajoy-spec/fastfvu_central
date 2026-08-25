@@ -1,0 +1,56 @@
+name: FVU Validation (Headless GUI)
+
+on:
+  repository_dispatch:
+    types: [fvu_validation]
+
+jobs:
+  run-fvu-validation:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set up Java
+        uses: actions/setup-java@v3
+        with:
+          distribution: 'temurin'
+          java-version: '17' # Adjust to 8 if the FVU JAR requires Java 8
+
+      - name: Install xvfb (Virtual Framebuffer for Java Swing)
+        run: sudo apt-get update && sudo apt-get install -y xvfb
+
+      - name: Prepare Input and Output Directories
+        run: |
+          mkdir -p inputs outputs
+          
+          # Write the TXT file payload to disk
+          echo "${{ github.event.client_payload.fileContent }}" > "inputs/${{ github.event.client_payload.fileName }}"
+          
+          # Write the CSI file payload to disk if it exists
+          if [ -n "${{ github.event.client_payload.csiFileName }}" ]; then
+            echo "${{ github.event.client_payload.csiFileContent }}" > "inputs/${{ github.event.client_payload.csiFileName }}"
+          fi
+
+      - name: Execute FVU Validator (Headless via xvfb)
+        run: |
+          TXT_FILE="inputs/${{ github.event.client_payload.fileName }}"
+          
+          if [ -n "${{ github.event.client_payload.csiFileName }}" ]; then
+            CSI_FILE="inputs/${{ github.event.client_payload.csiFileName }}"
+          else
+            CSI_FILE="0"
+          fi
+          
+          OUT_DIR="outputs"
+          
+          # Execute the Java GUI application headlessly using xvfb-run
+          xvfb-run java -cp "TDS_TCS_FVU.jar:*" com.tin.FVU.FVU "$TXT_FILE" "$CSI_FILE" "$OUT_DIR" "0" "1.2"
+
+      - name: Upload Generated Output (FVU/ERR)
+        uses: actions/upload-artifact@v4
+        with:
+          name: fvu-validation-results-${{ github.event.client_payload.jobId }}
+          path: outputs/
+          retention-days: 1
