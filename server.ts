@@ -119,8 +119,8 @@ async function initDB() {
     await connection.query("INSERT IGNORE INTO api_keys (user_id, api_key) VALUES (?, 'ffv_live_9982x')", [dummyUserId]);
 
     console.log("Database Schemas & Migrations initialized successfully for TiDB/MySQL.");
-  } catch (err) {
-    console.error("Database initialization error:", err);
+  } catch (err: any) {
+    console.warn("Database initialization skipped (Access Denied or Connection Failed). Please check your TiDB credentials in .env.");
   }
 }
 
@@ -847,7 +847,7 @@ if (!process.env.VERCEL) {
   startServer();
 } else {
   // Fire off DB initialization in the background for Vercel
-  initDB().catch(console.error);
+  initDB().catch(e => console.warn("Background initDB failed:", e.message));
 }
 
 // Export for Vercel Serverless
