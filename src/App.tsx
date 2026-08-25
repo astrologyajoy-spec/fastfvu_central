@@ -47,47 +47,23 @@ export default function App() {
     if (csiFile) {
       formData.append("csiFile", csiFile);
     }
+    formData.append("email", userSession?.email || "developer@fastfvu.central");
 
     try {
-      const response = await fetch("/api/generate-fvu", {
+      const response = await fetch("/api/fvu", {
         method: "POST",
         body: formData,
       });
 
+      const data = await response.json();
+
       if (!response.ok) {
-        const contentType = response.headers.get("content-type");
-        if (contentType && contentType.indexOf("application/json") !== -1) {
-          const errData = await response.json();
-          throw new Error(errData.error || "Failed to process files.");
-        } else {
-          throw new Error(`Server returned status: ${response.status}`);
-        }
+        throw new Error(data.error || "Failed to process files.");
       }
 
-      const blob = await response.blob();
-      const disposition = response.headers.get("content-disposition");
-      let downloadFilename = "output.fvu";
-      if (disposition && disposition.indexOf("attachment") !== -1) {
-        const matches = /filename="([^"]*)"/.exec(disposition);
-        if (matches != null && matches[1]) {
-          downloadFilename = matches[1];
-        }
-      }
-
-      if (downloadFilename.endsWith(".err")) {
-        setError(`Validation Failed. The tool generated an error log (${downloadFilename}).`);
-      } else {
-        setSuccess(`Successfully generated FVU: ${downloadFilename}`);
-      }
-
-      const url = window.URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = downloadFilename;
-      document.body.appendChild(a);
-      a.click();
-      window.URL.revokeObjectURL(url);
-      a.remove();
+      setSuccess(data.message || "Job dispatched successfully! Please check your Dashboard Logs above to download the output.");
+      setTxtFile(null);
+      setCsiFile(null);
       
     } catch (err: any) {
       setError(err.message || "An unexpected error occurred during processing.");
