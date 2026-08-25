@@ -27,26 +27,11 @@ if (!fs.existsSync(uploadDir)) {
   fs.mkdirSync(uploadDir, { recursive: true });
 }
 
-const storage = multer.diskStorage({
-  destination: (req, file, cb) => {
-    cb(null, uploadDir);
-  },
-  filename: (req, file, cb) => {
-    cb(null, `${Date.now()}_${file.originalname.replace(/[^a-zA-Z0-9._-]/g, "_")}`);
-  },
-});
+const storage = multer.memoryStorage();
 const upload = multer({ storage });
 
 const cleanupFiles = (files: string[]) => {
-  files.forEach((file) => {
-    if (fs.existsSync(file)) {
-      try {
-        fs.unlinkSync(file);
-      } catch (err) {
-        console.error(`Failed to delete file: ${file}`, err);
-      }
-    }
-  });
+  // No longer needed for memoryStorage, keeping dummy function for backwards compatibility
 };
 
 // CORS Middleware (backup/express)
@@ -727,9 +712,9 @@ app.get("/api/v1/fvu/download", async (req, res) => {
   }
 });
 
-// GUI Automation FVU Endpoint (/api/generate-fvu)
+// GUI Automation FVU Endpoint (/api/fvu)
 app.post(
-  "/api/generate-fvu",
+  "/api/fvu",
   upload.fields([
     { name: "txtFile", maxCount: 1 },
     { name: "csiFile", maxCount: 1 },
@@ -745,9 +730,9 @@ app.post(
         return;
       }
 
-      // Read file contents
-      const txtContent = fs.readFileSync(txtFile.path, "utf8");
-      const csiContent = csiFile ? fs.readFileSync(csiFile.path, "utf8") : null;
+      // Read file contents from memory buffer directly (Vercel Serverless safe)
+      const txtContent = txtFile.buffer.toString("utf8");
+      const csiContent = csiFile ? csiFile.buffer.toString("utf8") : null;
       
       const fileName = txtFile.originalname;
       const csiFileName = csiFile ? csiFile.originalname : null;
@@ -805,9 +790,6 @@ app.post(
             console.warn("[Generate-FVU] DB log skipped:", e);
           }
 
-          // Cleanup tmp files
-          cleanupFiles([txtFile.path, csiFile ? csiFile.path : "0"].filter(p => p !== "0"));
-
           return res.json({
             success: true,
             status: "PENDING",
@@ -824,11 +806,9 @@ app.post(
           const errMsg = ghErr?.message || String(ghErr);
           const status = ghErr?.status || 400;
           console.error(`[Generate-FVU] GitHub dispatch error:`, errMsg);
-          cleanupFiles([txtFile.path, csiFile ? csiFile.path : "0"].filter(p => p !== "0"));
           return res.status(status).json({ error: "Failed to trigger GitHub Action: " + errMsg });
         }
       } else {
-        cleanupFiles([txtFile.path, csiFile ? csiFile.path : "0"].filter(p => p !== "0"));
         return res.status(500).json({ error: "GitHub PAT missing. Cannot dispatch to Vercel/GitHub Actions." });
       }
 
