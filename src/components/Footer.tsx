@@ -1,5 +1,5 @@
 import React from 'react';
-import { Terminal, Shield, Github, Twitter, Disc as Discord } from 'lucide-react';
+import { Terminal, Shield, Code, Share2, MessageSquare } from 'lucide-react';
 
 export function Footer() {
   return (
@@ -21,13 +21,13 @@ export function Footer() {
             </p>
             <div className="flex items-center space-x-3 pt-2">
               <a href="#github" className="w-8 h-8 rounded-lg bg-slate-900 border border-slate-800 flex items-center justify-center text-slate-400 hover:text-white transition-colors">
-                <Github className="w-4 h-4" />
+                <Code className="w-4 h-4" />
               </a>
               <a href="#twitter" className="w-8 h-8 rounded-lg bg-slate-900 border border-slate-800 flex items-center justify-center text-slate-400 hover:text-white transition-colors">
-                <Twitter className="w-4 h-4" />
+                <Share2 className="w-4 h-4" />
               </a>
               <a href="#discord" className="w-8 h-8 rounded-lg bg-slate-900 border border-slate-800 flex items-center justify-center text-slate-400 hover:text-white transition-colors">
-                <Discord className="w-4 h-4" />
+                <MessageSquare className="w-4 h-4" />
               </a>
             </div>
           </div>
