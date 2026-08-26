@@ -80,6 +80,22 @@ function run() {
 
   appendLog(`[INFO] Computed Classpath: ${cpString}`);
 
+  // Attempt to compile Desktop GUI Automator if javac is available
+  const automatorJava = path.join(process.cwd(), 'scripts', 'FVUGUIAutomator.java');
+  let hasAutomator = false;
+  try {
+    if (fs.existsSync(automatorJava)) {
+      appendLog(`[INFO] Compiling Desktop GUI Automator: ${automatorJava}`);
+      execSync(`javac -cp "${cpString}" "${automatorJava}"`, { stdio: 'pipe' });
+      hasAutomator = true;
+      appendLog(`[OK] FVUGUIAutomator compiled successfully.`);
+    }
+  } catch (err) {
+    appendLog(`[NOTE] javac compilation skipped (${err.message}), using standard entry point.`);
+  }
+
+  const automatorCp = `${path.join(process.cwd(), 'scripts')}:${cpString}`;
+
   console.log("\n--- 3. EXECUTING JAVA ENGINE ---");
 
   const tryExecute = (cmd) => {
@@ -169,9 +185,17 @@ function run() {
   const versionsToTry = Array.from(new Set([detectedVersion, '8.5', '1.2']));
   let res = { success: false };
 
-  appendLog(`\n[INFO] Executing Desktop-Style Entry Point: ${className}`);
+  appendLog(`\n[INFO] Executing Desktop-Style GUI Automator Entry Point...`);
   for (const ver of versionsToTry) {
     appendLog(`[INFO] Attempting execution with FVU Version argument: "${ver}"`);
+    
+    if (hasAutomator) {
+      appendLog(`[INFO] Running Desktop GUI Window Automator (Swing Thread)...`);
+      res = tryExecute(`java -Dfile.encoding=UTF-8 -cp "${automatorCp}" FVUGUIAutomator "${inputPath}" "${errPath}" "${csiPath !== '0' ? csiPath : '0'}" "${ver}"`);
+      if (res.success) break;
+    }
+
+    // Direct com.tin.FVU.FVU fallback
     const args = [
       `"${inputPath}"`,
       `"${errPath}"`,
