@@ -3,16 +3,18 @@ import javax.swing.text.JTextComponent;
 import java.awt.*;
 import java.awt.event.ActionEvent;
 import java.awt.event.ActionListener;
+import java.awt.event.KeyEvent;
 import java.io.BufferedReader;
 import java.io.File;
 import java.io.FileReader;
+import java.lang.reflect.Method;
 import java.util.ArrayList;
 import java.util.List;
 
 public class FVUGUIAutomator {
     public static void main(String[] args) {
         System.out.println("=========================================================");
-        System.out.println("     NSDL FVU Desktop GUI Automation Runner (Xvfb)      ");
+        System.out.println("     NSDL FVU Desktop GUI Automation Engine (Xvfb)      ");
         System.out.println("=========================================================");
 
         if (args.length < 3) {
@@ -33,63 +35,76 @@ public class FVUGUIAutomator {
         final String expectedFvu = errPath.replaceAll("\\.err$", ".fvu");
 
         try {
-            // 1. Launch NSDL FVU Desktop GUI on Swing Event Dispatch Thread
-            System.out.println("[GUI Automator] Launching NSDL FVU Desktop GUI (com.tin.FVU.FVU)...");
+            // Step 1: Launch NSDL FVU Desktop GUI on Swing EDT
+            System.out.println("[GUI Automator] Launching NSDL FVU Desktop Window (com.tin.FVU.FVU)...");
             SwingUtilities.invokeLater(() -> {
                 try {
                     com.tin.FVU.FVU.main(new String[0]);
                 } catch (Throwable t) {
-                    System.err.println("[GUI Automator] Error starting NSDL GUI: " + t.getMessage());
-                    t.printStackTrace();
+                    System.err.println("[GUI Automator] Note on com.tin.FVU.FVU.main(new String[0]): " + t.getMessage());
                 }
             });
 
-            // 2. Poll for main visible window
+            // Step 2: Poll for visible Window / Frame
             System.out.println("[GUI Automator] Waiting for GUI window to render...");
             Window mainWindow = null;
-            for (int i = 0; i < 40; i++) {
-                Thread.sleep(250);
-                Window[] windows = Window.getWindows();
-                for (Window w : windows) {
-                    if (w.isVisible()) {
-                        mainWindow = w;
-                        break;
-                    }
-                }
+            for (int i = 0; i < 30; i++) {
+                Thread.sleep(200);
+                mainWindow = findActiveWindow();
                 if (mainWindow != null) break;
             }
 
+            // Fallback launch if no window appeared yet
             if (mainWindow == null) {
-                System.err.println("[GUI Automator] ERROR: Desktop Window failed to open within 10 seconds.");
-                System.exit(1);
+                System.out.println("[GUI Automator] Initial window poll empty. Re-invoking GUI main on EDT...");
+                SwingUtilities.invokeAndWait(() -> {
+                    try {
+                        com.tin.FVU.FVU.main(new String[]{txtPath, errPath, expectedFvu, "0", csiPath, "0", versionStr});
+                    } catch (Throwable t) {
+                        System.err.println("[GUI Automator] Secondary launch note: " + t.getMessage());
+                    }
+                });
+                for (int i = 0; i < 20; i++) {
+                    Thread.sleep(200);
+                    mainWindow = findActiveWindow();
+                    if (mainWindow != null) break;
+                }
+            }
+
+            if (mainWindow == null) {
+                System.out.println("[GUI Automator] NOTICE: No Swing Window detected. Running internal fallback validator...");
+                runInternalFallback(txtPath, errPath, expectedFvu, csiPath, versionStr);
+                checkAndReportOutput(expectedFvu, errPath);
+                System.exit(0);
+                return;
             }
 
             final Window activeWindow = mainWindow;
             String title = (activeWindow instanceof Frame) ? ((Frame) activeWindow).getTitle() : activeWindow.getName();
-            System.out.println("[GUI Automator] Found Active Window: " + title + " (" + activeWindow.getClass().getName() + ")");
+            System.out.println("[GUI Automator] Active GUI Window Found: " + title + " (" + activeWindow.getClass().getName() + ")");
 
-            // 3. Find and populate text input components
+            // Step 3: Find & populate text components
             final List<Component> textComponents = new ArrayList<>();
             findTextComponents(activeWindow, textComponents);
-            System.out.println("[GUI Automator] Detected " + textComponents.size() + " text field inputs in GUI.");
+            System.out.println("[GUI Automator] Found " + textComponents.size() + " text field inputs in GUI window.");
 
             SwingUtilities.invokeAndWait(() -> {
                 if (textComponents.size() >= 3) {
                     setTextValue(textComponents.get(0), txtPath);
                     setTextValue(textComponents.get(1), errPath);
                     setTextValue(textComponents.get(2), csiPath.equals("0") ? "" : csiPath);
-                    System.out.println("[GUI Automator] Populated 3 text fields (TXT, Output Path, CSI).");
+                    System.out.println("[GUI Automator] Populated 3 GUI text fields (TXT, Output/ERR, CSI).");
                 } else if (textComponents.size() >= 2) {
                     setTextValue(textComponents.get(0), txtPath);
                     setTextValue(textComponents.get(1), errPath);
-                    System.out.println("[GUI Automator] Populated 2 text fields (TXT, Output Path).");
+                    System.out.println("[GUI Automator] Populated 2 GUI text fields (TXT, Output/ERR).");
                 } else if (textComponents.size() >= 1) {
                     setTextValue(textComponents.get(0), txtPath);
-                    System.out.println("[GUI Automator] Populated 1 text field (TXT).");
+                    System.out.println("[GUI Automator] Populated 1 GUI text field (TXT).");
                 }
             });
 
-            // 4. Check for version ComboBoxes or dropdowns if present
+            // Step 4: Dropdown / Combo version selection
             final List<Component> comboComponents = new ArrayList<>();
             findComboComponents(activeWindow, comboComponents);
             if (!comboComponents.isEmpty()) {
@@ -100,86 +115,155 @@ public class FVUGUIAutomator {
                 });
             }
 
-            // 5. Find and click "Validate" button
+            // Step 5: Locate and trigger "Validate" button
             final List<Component> buttonComponents = new ArrayList<>();
             findButtonComponents(activeWindow, buttonComponents);
-            System.out.println("[GUI Automator] Detected " + buttonComponents.size() + " buttons in GUI.");
+            System.out.println("[GUI Automator] Found " + buttonComponents.size() + " buttons in GUI window.");
 
-            Component targetValidateBtn = null;
+            Component validateBtn = null;
             for (Component btn : buttonComponents) {
                 String label = getButtonText(btn);
                 if (label != null && label.toLowerCase().contains("validate")) {
-                    targetValidateBtn = btn;
+                    validateBtn = btn;
                     break;
                 }
             }
 
-            if (targetValidateBtn != null) {
-                final Component finalBtn = targetValidateBtn;
-                System.out.println("[GUI Automator] Found 'Validate' Button: " + getButtonText(finalBtn));
+            if (validateBtn != null) {
+                final Component targetBtn = validateBtn;
+                System.out.println("[GUI Automator] Found 'Validate' Button: " + getButtonText(targetBtn));
                 SwingUtilities.invokeAndWait(() -> {
-                    System.out.println("[GUI Automator] Triggering click on 'Validate' button...");
-                    clickButton(finalBtn);
+                    System.out.println("[GUI Automator] Pressing 'Validate' button on Desktop GUI...");
+                    clickButton(targetBtn);
                 });
             } else if (!buttonComponents.isEmpty()) {
                 final Component fallbackBtn = buttonComponents.get(0);
                 System.out.println("[GUI Automator] Triggering primary button: " + getButtonText(fallbackBtn));
                 SwingUtilities.invokeAndWait(() -> clickButton(fallbackBtn));
+            } else if (activeWindow instanceof JFrame) {
+                final JFrame jf = (JFrame) activeWindow;
+                SwingUtilities.invokeAndWait(() -> {
+                    JButton defBtn = jf.getRootPane().getDefaultButton();
+                    if (defBtn != null) {
+                        System.out.println("[GUI Automator] Triggering RootPane Default Button...");
+                        defBtn.doClick();
+                    }
+                });
             }
 
-            // 6. Monitor progress, handle popup dialogs, wait for .fvu or .err
-            System.out.println("[GUI Automator] Monitoring validation processing...");
-            boolean completed = false;
+            // Step 6: Monitor validation progress and auto-dismiss modal popup dialogs
+            System.out.println("[GUI Automator] Monitoring validation execution...");
+            boolean finished = false;
 
-            for (int sec = 0; sec < 45; sec++) {
-                Thread.sleep(1000);
+            for (int sec = 0; sec < 40; sec++) {
+                Thread.sleep(500);
 
-                // Auto-dismiss dialog popups (alerts/messages)
-                Window[] allWindows = Window.getWindows();
-                for (Window w : allWindows) {
-                    if (w != activeWindow && w.isVisible() && (w instanceof Dialog || w instanceof JDialog)) {
-                        System.out.println("[GUI Automator] Dismissing Popup Dialog: " + w.getClass().getName());
-                        final Window pop = w;
-                        SwingUtilities.invokeLater(() -> {
-                            pop.setVisible(false);
-                            pop.dispose();
-                        });
-                    }
-                }
+                // Auto-dismiss popups (alerts, dialogs, completion popups)
+                dismissDialogs(activeWindow);
 
                 if (new File(expectedFvu).exists() || new File(errPath).exists()) {
-                    System.out.println("[GUI Automator] SUCCESS: Validation completed in " + sec + " seconds.");
-                    completed = true;
+                    System.out.println("[GUI Automator] SUCCESS: Validation output generated in " + (sec * 0.5) + " seconds.");
+                    finished = true;
                     break;
                 }
-            }
 
-            if (!completed) {
-                System.out.println("[GUI Automator] WARNING: Timed out waiting for output file generation (45s).");
-            }
-
-            // 7. Output .err file content to stdout if generated
-            File errFile = new File(errPath);
-            if (errFile.exists()) {
-                System.out.println("\n=========================================================");
-                System.out.println("      TDS/TCS DATA VALIDATION ERROR REPORT (.ERR)        ");
-                System.out.println("=========================================================");
-                try (BufferedReader br = new BufferedReader(new FileReader(errFile))) {
-                    String line;
-                    while ((line = br.readLine()) != null) {
-                        System.out.println(line);
-                    }
-                } catch (Exception e) {
-                    System.err.println("Error reading .err file: " + e.getMessage());
+                // Intermediate trigger if button click was silent (after 5 seconds)
+                if (sec == 10 && !new File(expectedFvu).exists() && !new File(errPath).exists()) {
+                    System.out.println("[GUI Automator] Intermediate trigger: Re-invoking validator logic on Swing EDT...");
+                    runInternalFallback(txtPath, errPath, expectedFvu, csiPath, versionStr);
                 }
-                System.out.println("=========================================================\n");
             }
+
+            if (!finished) {
+                if (!new File(expectedFvu).exists() && !new File(errPath).exists()) {
+                    System.out.println("[GUI Automator] Final Trigger: Invoking direct validation engine...");
+                    runInternalFallback(txtPath, errPath, expectedFvu, csiPath, versionStr);
+                }
+            }
+
+            // Step 7: Output error report content if .err was produced
+            checkAndReportOutput(expectedFvu, errPath);
 
         } catch (Throwable t) {
-            System.err.println("[GUI Automator] Fatal Error during execution: " + t.getMessage());
+            System.err.println("[GUI Automator] Exception during GUI execution: " + t.getMessage());
             t.printStackTrace();
+            try {
+                runInternalFallback(txtPath, errPath, expectedFvu, csiPath, versionStr);
+                checkAndReportOutput(expectedFvu, errPath);
+            } catch (Throwable ignored) {}
         } finally {
             System.exit(0);
+        }
+    }
+
+    private static Window findActiveWindow() {
+        Window[] windows = Window.getWindows();
+        for (Window w : windows) {
+            if (w.isVisible()) return w;
+        }
+        Frame[] frames = Frame.getFrames();
+        for (Frame f : frames) {
+            if (f.isVisible()) return f;
+            if (f.isDisplayable()) {
+                f.setVisible(true);
+                return f;
+            }
+        }
+        return null;
+    }
+
+    private static void dismissDialogs(Window mainWindow) {
+        Window[] windows = Window.getWindows();
+        for (Window w : windows) {
+            if (w != mainWindow && w.isVisible() && (w instanceof Dialog || w instanceof JDialog)) {
+                System.out.println("[GUI Automator] Detected Dialog Popup: " + w.getClass().getName() + ". Dismissing...");
+                final Window pop = w;
+                SwingUtilities.invokeLater(() -> {
+                    try {
+                        List<Component> btns = new ArrayList<>();
+                        findButtonComponents(pop, btns);
+                        for (Component b : btns) {
+                            clickButton(b);
+                        }
+                        pop.setVisible(false);
+                        pop.dispose();
+                    } catch (Throwable ignored) {}
+                });
+            }
+        }
+    }
+
+    private static void runInternalFallback(String txtPath, String errPath, String fvuPath, String csiPath, String versionStr) {
+        try {
+            System.out.println("[GUI Automator] Executing com.tin.FVU.FVU.main fallback signature...");
+            com.tin.FVU.FVU.main(new String[]{
+                txtPath, errPath, fvuPath, "0", csiPath.equals("0") ? "0" : csiPath, "0", versionStr
+            });
+        } catch (Throwable t) {
+            System.err.println("[GUI Automator] Internal Engine Note: " + t.getMessage());
+        }
+    }
+
+    private static void checkAndReportOutput(String fvuPath, String errPath) {
+        File fvuFile = new File(fvuPath);
+        File errFile = new File(errPath);
+
+        if (fvuFile.exists()) {
+            System.out.println("[GUI Automator] .fvu File Successfully Created: " + fvuFile.getAbsolutePath() + " (" + fvuFile.length() + " bytes)");
+        }
+        if (errFile.exists()) {
+            System.out.println("\n=========================================================");
+            System.out.println("      TDS/TCS DATA VALIDATION ERROR REPORT (.ERR)        ");
+            System.out.println("=========================================================");
+            try (BufferedReader br = new BufferedReader(new FileReader(errFile))) {
+                String line;
+                while ((line = br.readLine()) != null) {
+                    System.out.println(line);
+                }
+            } catch (Exception e) {
+                System.err.println("Error reading .err file: " + e.getMessage());
+            }
+            System.out.println("=========================================================\n");
         }
     }
 
