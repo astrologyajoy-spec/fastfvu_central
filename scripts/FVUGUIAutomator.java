@@ -8,6 +8,7 @@ import java.io.File;
 import java.io.FileReader;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Comparator;
 
 public class FVUGUIAutomator {
     public static void main(String[] args) {
@@ -37,7 +38,8 @@ public class FVUGUIAutomator {
                 try {
                     com.tin.FVU.FVU.main(new String[0]);
                 } catch (Throwable t) {
-                    System.err.println("[GUI Automator] Note on Desktop GUI launch: " + t.getMessage());
+                    System.err.println("[GUI Automator] Exception on GUI launch: " + t.getMessage());
+                    t.printStackTrace();
                 }
             });
             guiLauncher.setDaemon(true);
@@ -52,28 +54,22 @@ public class FVUGUIAutomator {
             for (int i = 0; i < 150; i++) { // Poll up to 30 seconds
                 Thread.sleep(200);
 
-                // Auto-dismiss any startup modal dialogs (welcome popups, alerts, disclaimers)
-                dismissDialogs(null);
-
                 Window[] windows = Window.getWindows();
                 Frame[] frames = Frame.getFrames();
-                List<Window> candidateWindows = new ArrayList<>();
-                for (Window w : windows) candidateWindows.add(w);
+                List<Window> allWindows = new ArrayList<>();
+                for (Window w : windows) allWindows.add(w);
                 for (Frame f : frames) {
-                    if (!candidateWindows.contains(f)) candidateWindows.add(f);
+                    if (!allWindows.contains(f)) allWindows.add(f);
                 }
 
-                for (Window candidate : candidateWindows) {
-                    if (candidate instanceof Dialog || candidate instanceof JDialog) {
-                        continue; // Skip dialogs for main text field discovery
-                    }
-
+                // Try to find main form window
+                for (Window candidate : allWindows) {
                     List<Component> tc = new ArrayList<>();
                     List<Component> bc = new ArrayList<>();
                     findTextComponents(candidate, tc);
                     findButtonComponents(candidate, bc);
 
-                    if (!tc.isEmpty()) {
+                    if (tc.size() >= 2) {
                         targetWindow = candidate;
                         textComponents = tc;
                         buttonComponents = bc;
@@ -81,16 +77,38 @@ public class FVUGUIAutomator {
                     }
                 }
 
-                if (targetWindow != null && !textComponents.isEmpty()) {
+                if (targetWindow != null) {
                     break;
                 }
 
-                // Force visibility on frames if rendering is delayed in XVFB
+                // If no main window found yet, dismiss any blocking popups
+                for (Window candidate : allWindows) {
+                    if (candidate.isVisible() && (candidate instanceof Dialog || candidate instanceof JDialog)) {
+                        List<Component> tc = new ArrayList<>();
+                        findTextComponents(candidate, tc);
+                        if (tc.size() < 2) { // It's a popup, not the main form
+                            System.out.println("[GUI Automator] Auto-Dismissing Startup Popup: " + candidate.getClass().getName());
+                            List<Component> bc = new ArrayList<>();
+                            findButtonComponents(candidate, bc);
+                            SwingUtilities.invokeLater(() -> {
+                                for (Component b : bc) {
+                                    String label = getButtonText(b).toLowerCase();
+                                    if (label.contains("ok") || label.contains("yes") || label.contains("continue") || label.contains("accept")) {
+                                        clickButton(b);
+                                    }
+                                }
+                                candidate.setVisible(false);
+                                candidate.dispose();
+                            });
+                        }
+                    }
+                }
+
+                // Force visibility to trigger component layout in XVFB if needed
                 if (i >= 10 && i % 10 == 0) {
                     for (Frame f : frames) {
                         try {
-                            f.setVisible(true);
-                            f.toFront();
+                            if (!f.isVisible()) f.setVisible(true);
                         } catch (Throwable ignored) {}
                     }
                 }
@@ -98,42 +116,54 @@ public class FVUGUIAutomator {
 
             if (targetWindow == null || textComponents.isEmpty()) {
                 System.err.println("[GUI Automator] ERROR: Desktop Window or text fields failed to render within 30 seconds.");
+                System.out.println("[GUI Automator] Diagnostics: Found " + Window.getWindows().length + " windows, " + Frame.getFrames().length + " frames.");
                 System.exit(1);
                 return;
             }
 
             final Window activeWindow = targetWindow;
             String title = (activeWindow instanceof Frame) ? ((Frame) activeWindow).getTitle() : activeWindow.getName();
-            System.out.println("[GUI Automator] Active Window Found: " + title + " (" + activeWindow.getClass().getName() + ")");
-            System.out.println("[GUI Automator] Detected " + textComponents.size() + " text field inputs in GUI Window.");
-            System.out.println("[GUI Automator] Detected " + buttonComponents.size() + " buttons in GUI Window.");
-
+            System.out.println("[GUI Automator] Active Window Found: " + title);
+            System.out.println("[GUI Automator] Detected " + textComponents.size() + " text field inputs.");
+            
             // Step 3: Populate GUI Text Fields on Swing Event Dispatch Thread (EDT)
             final List<Component> finalFields = textComponents;
             SwingUtilities.invokeAndWait(() -> {
                 try {
-                    activeWindow.setVisible(true);
-                    if (activeWindow instanceof Frame) {
-                        ((Frame) activeWindow).toFront();
-                    }
+                    if (!activeWindow.isVisible()) activeWindow.setVisible(true);
+                    if (activeWindow instanceof Frame) ((Frame) activeWindow).toFront();
                 } catch (Throwable ignored) {}
+
+                // Sort fields by Y coordinate to ensure correct mapping (Top=TXT, Mid=CSI, Bot=ERR)
+                finalFields.sort(new Comparator<Component>() {
+                    public int compare(Component c1, Component c2) {
+                        try {
+                            Point p1 = c1.getLocationOnScreen();
+                            Point p2 = c2.getLocationOnScreen();
+                            if (p1.y != p2.y) return Integer.compare(p1.y, p2.y);
+                            return Integer.compare(p1.x, p2.x);
+                        } catch (Exception e) {
+                            return 0; // Fallback if not yet fully displayable
+                        }
+                    }
+                });
 
                 if (finalFields.size() >= 3) {
                     setTextValue(finalFields.get(0), txtPath);
-                    setTextValue(finalFields.get(1), errPath);
-                    setTextValue(finalFields.get(2), csiPath.equals("0") ? "" : csiPath);
-                    System.out.println("[GUI Automator] Populated 3 text fields (TXT Path, ERR Output Path, CSI Path).");
-                } else if (finalFields.size() >= 2) {
+                    setTextValue(finalFields.get(1), csiPath.equals("0") ? "" : csiPath);
+                    setTextValue(finalFields.get(2), errPath);
+                    System.out.println("[GUI Automator] Populated 3 text fields (TXT Path, CSI Path, ERR Output Path).");
+                } else if (finalFields.size() == 2) {
                     setTextValue(finalFields.get(0), txtPath);
                     setTextValue(finalFields.get(1), errPath);
                     System.out.println("[GUI Automator] Populated 2 text fields (TXT Path, ERR Output Path).");
-                } else if (finalFields.size() >= 1) {
+                } else if (finalFields.size() == 1) {
                     setTextValue(finalFields.get(0), txtPath);
                     System.out.println("[GUI Automator] Populated 1 text field (TXT Path).");
                 }
             });
 
-            Thread.sleep(300); // Allow EDT event propagation
+            Thread.sleep(500); // Allow EDT events and listeners to propagate
 
             // Step 4: Locate and click "Validate" action button on Swing EDT
             List<Component> currentButtons = new ArrayList<>();
@@ -162,7 +192,7 @@ public class FVUGUIAutomator {
             }
 
             if (validateBtn == null && !currentButtons.isEmpty()) {
-                validateBtn = currentButtons.get(0);
+                validateBtn = currentButtons.get(0); // Fallback to first button
             }
 
             if (validateBtn != null) {
@@ -183,7 +213,22 @@ public class FVUGUIAutomator {
             for (int sec = 0; sec < 120; sec++) {
                 Thread.sleep(500);
 
-                dismissDialogs(activeWindow);
+                // Dismiss any new popups (e.g. "Validation Successful" or error messages)
+                Window[] currentWindows = Window.getWindows();
+                for (Window w : currentWindows) {
+                    if (w != activeWindow && w.isVisible() && (w instanceof Dialog || w instanceof JDialog)) {
+                        List<Component> popupBtns = new ArrayList<>();
+                        findButtonComponents(w, popupBtns);
+                        SwingUtilities.invokeLater(() -> {
+                            System.out.println("[GUI Automator] Dismissing Post-Validation Popup: " + w.getClass().getName());
+                            for (Component b : popupBtns) {
+                                clickButton(b);
+                            }
+                            w.setVisible(false);
+                            w.dispose();
+                        });
+                    }
+                }
 
                 if (new File(expectedFvu).exists() || new File(errPath).exists()) {
                     System.out.println("[GUI Automator] SUCCESS: Output file created in " + (sec * 0.5) + " seconds.");
@@ -211,27 +256,6 @@ public class FVUGUIAutomator {
             t.printStackTrace();
         } finally {
             System.exit(0);
-        }
-    }
-
-    private static void dismissDialogs(Window mainWindow) {
-        Window[] windows = Window.getWindows();
-        for (Window w : windows) {
-            if (w != mainWindow && w.isVisible() && (w instanceof Dialog || w instanceof JDialog)) {
-                System.out.println("[GUI Automator] Dismissing Popup Dialog: " + w.getClass().getName());
-                final Window pop = w;
-                SwingUtilities.invokeLater(() -> {
-                    try {
-                        List<Component> btns = new ArrayList<>();
-                        findButtonComponents(pop, btns);
-                        for (Component b : btns) {
-                            clickButton(b);
-                        }
-                        pop.setVisible(false);
-                        pop.dispose();
-                    } catch (Throwable ignored) {}
-                });
-            }
         }
     }
 
@@ -297,9 +321,11 @@ public class FVUGUIAutomator {
 
     private static String getButtonText(Component c) {
         if (c instanceof AbstractButton) {
-            return ((AbstractButton) c).getText();
+            String text = ((AbstractButton) c).getText();
+            return text == null ? "" : text;
         } else if (c instanceof Button) {
-            return ((Button) c).getLabel();
+            String label = ((Button) c).getLabel();
+            return label == null ? "" : label;
         }
         return "";
     }
