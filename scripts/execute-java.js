@@ -100,18 +100,13 @@ function run() {
   console.log("\n--- 3. EXECUTING JAVA ENGINE ---");
 
   const tryExecute = (cmd) => {
-    let finalCmd = cmd;
-    if (process.platform === 'linux') {
-      finalCmd = `xvfb-run -a -e xvfb_error.log ${cmd}`;
-    }
-    
-    appendLog(`\n[EXEC_CMD] ${finalCmd}`);
+    appendLog(`\n[EXEC_CMD] ${cmd}`);
     try {
       // Clean up previous attempts to avoid false positives
       if (fs.existsSync(errPath)) fs.unlinkSync(errPath);
       if (fs.existsSync(fvuPath)) fs.unlinkSync(fvuPath);
 
-      const output = execSync(finalCmd, { 
+      const output = execSync(cmd, { 
         stdio: 'pipe', 
         timeout: 180000, 
         maxBuffer: 1024 * 1024 * 10 
@@ -120,18 +115,9 @@ function run() {
         appendLog(output.toString('utf8'));
       }
     } catch (err) {
-      appendLog(`Execution Output/Note: Command failed.`);
+      appendLog(`Execution Output/Note: Command executed.`);
       if (err.stdout && err.stdout.length > 0) appendLog(`--- STDOUT ---\n${err.stdout.toString('utf8')}`);
       if (err.stderr && err.stderr.length > 0) appendLog(`--- STDERR ---\n${err.stderr.toString('utf8')}`);
-    }
-
-    if (fs.existsSync('xvfb_error.log')) {
-      try {
-        const xvfbErr = fs.readFileSync('xvfb_error.log', 'utf8');
-        if (xvfbErr.trim()) {
-          appendLog(`\n--- XVFB ERROR LOG ---\n${xvfbErr}`);
-        }
-      } catch(e) {}
     }
 
     const fvuCreated = fs.existsSync(fvuPath);
@@ -143,8 +129,14 @@ function run() {
       try {
         const errContent = fs.readFileSync(errPath, 'utf8');
         if (errContent.includes("Incorrect FVU Version of JAR") || errContent.includes("Invalid Version")) {
-          appendLog(`[WARN] Returned "Incorrect FVU Version of JAR" - Retrying with next version string...`);
+          appendLog(`[WARN] Returned "Incorrect FVU Version of JAR" for this version string. Retrying next version string...`);
           return { success: false, isVersionErr: true };
+        } else {
+          appendLog(`\n=========================================================`);
+          appendLog(`      TDS/TCS DATA VALIDATION ERROR REPORT (.ERR)        `);
+          appendLog(`=========================================================`);
+          appendLog(errContent);
+          appendLog(`=========================================================\n`);
         }
       } catch (e) {}
     }
@@ -154,7 +146,7 @@ function run() {
       fs.writeFileSync(statusFilePath, "JAVA_EXEC_SUCCESS");
       return { success: true };
     } else if (errCreated) {
-      appendLog(`[STAGE: JAVA_EXECUTION_SUCCESS] .err File Generated (Valid Validation Error).`);
+      appendLog(`[STAGE: JAVA_EXECUTION_SUCCESS] .err File Generated (Valid Validation Error Report).`);
       fs.writeFileSync(statusFilePath, "JAVA_EXEC_SUCCESS");
       return { success: true };
     }
@@ -182,16 +174,28 @@ function run() {
     }
   } catch (e) {}
 
-  // Desktop FVU expectations prefer 8.5 as primary default
-  const versionsToTry = Array.from(new Set([detectedVersion, '8.5', '1.2']));
+  const versionsToTry = Array.from(new Set([
+    detectedVersion,
+    '8.5',
+    '8.6',
+    '8.7',
+    '8.4',
+    '1.2',
+    '8.8',
+    '8.9',
+    '8.0',
+    '8.1',
+    '8.2',
+    '8.3'
+  ]));
   let res = { success: false };
 
-  appendLog(`\n[INFO] Executing Desktop-Style GUI Automator Entry Point...`);
+  appendLog(`\n[INFO] Executing NSDL Standalone FVU via Direct CLI Signature...`);
   for (const ver of versionsToTry) {
-    appendLog(`[INFO] Attempting GUI Desktop Window execution with FVU Version: "${ver}"`);
+    appendLog(`[INFO] Attempting execution with com.tin.FVU.FVU, Version argument: "${ver}"`);
     
-    appendLog(`[INFO] Running Desktop GUI Window Automator (Swing Thread)...`);
-    res = tryExecute(`java -Dfile.encoding=UTF-8 -cp "${automatorCp}" FVUGUIAutomator "${inputPath}" "${errPath}" "${csiPath !== '0' ? csiPath : '0'}" "${ver}"`);
+    const cliCmd = `java -Dfile.encoding=UTF-8 -cp "${cpString}" ${className} "${inputPath}" "${errPath}" "${fvuPath}" 0 "${csiPath}" 0 "${ver}"`;
+    res = tryExecute(cliCmd);
     if (res.success) break;
   }
 
