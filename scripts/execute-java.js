@@ -80,15 +80,6 @@ function run() {
 
   appendLog(`[INFO] Computed Classpath: ${cpString}`);
 
-  // Base Arguments: <input> <err> <fvu> <consolidated> <csi>
-  const baseArgs = [
-    `"${inputPath}"`,
-    `"${errPath}"`,
-    `"${fvuPath}"`,
-    '0',
-    csiPath !== '0' ? `"${csiPath}"` : '0'
-  ];
-
   console.log("\n--- 3. EXECUTING JAVA ENGINE ---");
 
   const tryExecute = (cmd) => {
@@ -135,7 +126,7 @@ function run() {
       try {
         const errContent = fs.readFileSync(errPath, 'utf8');
         if (errContent.includes("Incorrect FVU Version of JAR") || errContent.includes("Invalid Version")) {
-          appendLog(`[WARN] Returned "Incorrect FVU Version of JAR" - Retrying with next signature...`);
+          appendLog(`[WARN] Returned "Incorrect FVU Version of JAR" - Retrying with next version string...`);
           return { success: false, isVersionErr: true };
         }
       } catch (e) {}
@@ -154,22 +145,24 @@ function run() {
     return { success: false };
   };
 
-  const classesToTry = [manifestMain, 'com.tin.FVU.FVU', 'com.mbridge.fvu.TDSFVU'];
+  const className = 'com.tin.FVU.FVU';
+  const versionsToTry = ['8.5', '1.2'];
   let res = { success: false };
 
-  // Phase 1: Try with Classpath + Main Classes
-  for (const className of classesToTry) {
-    if (!className || className.trim() === '') continue;
-    
-    appendLog(`\n[INFO] Trying Class: ${className}`);
-    res = tryExecute(`java -Dfile.encoding=UTF-8 -cp "${cpString}" ${className} ${baseArgs.join(' ')}`);
-    if (res.success) break;
-  }
+  appendLog(`\n[INFO] Executing Main Class: ${className}`);
+  for (const ver of versionsToTry) {
+    const args = [
+      `"${inputPath}"`,
+      `"${errPath}"`,
+      `"${fvuPath}"`,
+      '0',                                      // Parameter 4: Zero / Hash Flag
+      csiPath !== '0' ? `"${csiPath}"` : '0',  // Parameter 5: CSI File Path
+      '0',                                      // Parameter 6: Consolidated/Upload Flag
+      `"${ver}"`                                // Parameter 7: Version String ("8.5" or "1.2")
+    ];
 
-  // Phase 2: Try Direct -jar Execution (Fallback)
-  if (!res.success) {
-    appendLog(`\n[INFO] Trying Direct -jar Execution...`);
-    res = tryExecute(`java -Dfile.encoding=UTF-8 -jar "${jarPath}" ${baseArgs.join(' ')}`);
+    res = tryExecute(`java -Dfile.encoding=UTF-8 -cp "${cpString}" ${className} ${args.join(' ')}`);
+    if (res.success) break;
   }
 
   if (!res.success) {
