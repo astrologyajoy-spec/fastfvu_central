@@ -53,10 +53,7 @@ public class FVUGUIAutomator {
             }
 
             if (mainWindow == null) {
-                System.err.println("[GUI Automator] [WARN] No visible Desktop Window found. Invoking GUI main with arguments...");
-                com.tin.FVU.FVU.main(new String[]{
-                    txtPath, errPath, errPath.replaceAll("\\.err$", ".fvu"), "0", csiPath, "0", versionStr
-                });
+                System.err.println("[GUI Automator] [WARN] Desktop GUI Window did not appear in time. Exiting without CLI fallback...");
                 return;
             }
 
