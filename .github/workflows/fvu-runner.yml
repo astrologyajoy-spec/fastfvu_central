@@ -42,12 +42,16 @@ jobs:
           JAR_PATH=""
           if [ -f "fvu-tool/TDS_STANDALONE_FVU_1.2.jar" ]; then
             JAR_PATH="fvu-tool/TDS_STANDALONE_FVU_1.2.jar"
-          elif [ -f "bin/TDS_STANDALONE_FVU_1.2.jar" ]; then
-            JAR_PATH="bin/TDS_STANDALONE_FVU_1.2.jar"
-          elif [ -f "fvu-tool/TDS_TCS_FVU.jar" ]; then
-            JAR_PATH="fvu-tool/TDS_TCS_FVU.jar"
+          elif [ -f "bin/1TDS_STANDALONE_FVU_1.1.jar" ]; then
+            JAR_PATH="bin/1TDS_STANDALONE_FVU_1.1.jar"
+          elif [ -f "bin/TDS_FVU.jar" ]; then
+            JAR_PATH="bin/TDS_FVU.jar"
           elif [ -f "bin/TDS_TCS_FVU.jar" ]; then
             JAR_PATH="bin/TDS_TCS_FVU.jar"
+          elif [ -f "fvu-tool/TDS_TCS_FVU.jar" ]; then
+            JAR_PATH="fvu-tool/TDS_TCS_FVU.jar"
+          else
+            JAR_PATH=$(find bin fvu-tool . -name "*.jar" 2>/dev/null | head -n 1)
           fi
 
           if [ -z "$JAR_PATH" ] || [ ! -f "$JAR_PATH" ]; then
@@ -92,13 +96,11 @@ jobs:
           echo "=== Step: Write Input Files ==="
           mkdir -p tmp_job
           FILE_NAME="${FILE_NAME:-statement.txt}"
-          
-          # Properly write text files preserving multi-line breaks
-          printf "%s" "$FILE_CONTENT" > "tmp_job/$FILE_NAME"
+          echo "$FILE_CONTENT" > "tmp_job/$FILE_NAME"
           echo "Input text file written successfully to disk: tmp_job/$FILE_NAME" | tee input_write.log
 
           if [ -n "$CSI_FILE_CONTENT" ] && [ -n "$CSI_FILE_NAME" ]; then
-            printf "%s" "$CSI_FILE_CONTENT" > "tmp_job/$CSI_FILE_NAME"
+            echo "$CSI_FILE_CONTENT" > "tmp_job/$CSI_FILE_NAME"
             echo "CSI file written successfully to disk: tmp_job/$CSI_FILE_NAME" >> input_write.log
           fi
 
