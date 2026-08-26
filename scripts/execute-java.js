@@ -188,26 +188,10 @@ function run() {
 
   appendLog(`\n[INFO] Executing Desktop-Style GUI Automator Entry Point...`);
   for (const ver of versionsToTry) {
-    appendLog(`[INFO] Attempting execution with FVU Version argument: "${ver}"`);
+    appendLog(`[INFO] Attempting GUI Desktop Window execution with FVU Version: "${ver}"`);
     
-    if (hasAutomator) {
-      appendLog(`[INFO] Running Desktop GUI Window Automator (Swing Thread)...`);
-      res = tryExecute(`java -Dfile.encoding=UTF-8 -cp "${automatorCp}" FVUGUIAutomator "${inputPath}" "${errPath}" "${csiPath !== '0' ? csiPath : '0'}" "${ver}"`);
-      if (res.success) break;
-    }
-
-    // Direct com.tin.FVU.FVU fallback
-    const args = [
-      `"${inputPath}"`,
-      `"${errPath}"`,
-      `"${fvuPath}"`,
-      '0',                                      // Parameter 4: Zero / Hash Flag
-      csiPath !== '0' ? `"${csiPath}"` : '0',  // Parameter 5: CSI File Path
-      '0',                                      // Parameter 6: Consolidated/Upload Flag
-      `"${ver}"`                                // Parameter 7: Version String (e.g. "8.5")
-    ];
-
-    res = tryExecute(`java -Dfile.encoding=UTF-8 -cp "${cpString}" ${className} ${args.join(' ')}`);
+    appendLog(`[INFO] Running Desktop GUI Window Automator (Swing Thread)...`);
+    res = tryExecute(`java -Dfile.encoding=UTF-8 -cp "${automatorCp}" FVUGUIAutomator "${inputPath}" "${errPath}" "${csiPath !== '0' ? csiPath : '0'}" "${ver}"`);
     if (res.success) break;
   }
 
