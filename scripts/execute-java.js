@@ -128,16 +128,11 @@ function run() {
     if (errCreated) {
       try {
         const errContent = fs.readFileSync(errPath, 'utf8');
-        if (errContent.includes("Incorrect FVU Version of JAR") || errContent.includes("Invalid Version")) {
-          appendLog(`[WARN] Returned "Incorrect FVU Version of JAR" for this version string. Retrying next version string...`);
-          return { success: false, isVersionErr: true };
-        } else {
-          appendLog(`\n=========================================================`);
-          appendLog(`      TDS/TCS DATA VALIDATION ERROR REPORT (.ERR)        `);
-          appendLog(`=========================================================`);
-          appendLog(errContent);
-          appendLog(`=========================================================\n`);
-        }
+        appendLog(`\n=========================================================`);
+        appendLog(`      TDS/TCS DATA VALIDATION ERROR REPORT (.ERR)        `);
+        appendLog(`=========================================================`);
+        appendLog(errContent);
+        appendLog(`=========================================================\n`);
       } catch (e) {}
     }
 
