@@ -156,50 +156,12 @@ function run() {
 
   const className = 'com.tin.FVU.FVU';
 
-  // Extract RPU version from input file if available (e.g., from line 1 caret field 10)
-  let detectedVersion = '8.5';
-  try {
-    if (fs.existsSync(inputPath)) {
-      const firstChunk = fs.readFileSync(inputPath, 'utf8').substring(0, 1000);
-      const lines = firstChunk.split(/\r?\n/);
-      if (lines.length > 0) {
-        const parts = lines[0].split('^');
-        if (parts.length >= 10 && parts[9]) {
-          const verMatch = parts[9].match(/\d+(\.\d+)+/);
-          if (verMatch) {
-            detectedVersion = verMatch[0];
-          }
-        }
-      }
-    }
-  } catch (e) {}
-
-  const versionsToTry = Array.from(new Set([
-    detectedVersion,
-    '8.5',
-    '8.6',
-    '8.7',
-    '8.4',
-    '1.2',
-    '8.8',
-    '8.9',
-    '8.0',
-    '8.1',
-    '8.2',
-    '8.3'
-  ]));
-  let res = { success: false };
-
   appendLog(`\n[INFO] Executing Desktop-Style GUI Automator Entry Point (Swing EDT + Xvfb)...`);
-  for (const ver of versionsToTry) {
-    appendLog(`[INFO] Running FVUGUIAutomator with Version Parameter: "${ver}"`);
-    let guiCmd = `java -Dfile.encoding=UTF-8 -cp "${automatorCp}" FVUGUIAutomator "${inputPath}" "${errPath}" "${csiPath !== '0' ? csiPath : '0'}" "${ver}"`;
-    if (process.platform === 'linux') {
-      guiCmd = `xvfb-run -a -e xvfb_error.log ${guiCmd}`;
-    }
-    res = tryExecute(guiCmd);
-    if (res.success) break;
+  let guiCmd = `java -Dfile.encoding=UTF-8 -cp "${automatorCp}" FVUGUIAutomator "${inputPath}" "${errPath}" "${csiPath !== '0' ? csiPath : '0'}"`;
+  if (process.platform === 'linux') {
+    guiCmd = `xvfb-run -a -e xvfb_error.log ${guiCmd}`;
   }
+  const res = tryExecute(guiCmd);
 
   if (!res.success) {
     appendLog(`\n[STAGE: JAVA_EXECUTION_FAILURE] Could not generate .fvu or valid .err file.`);
