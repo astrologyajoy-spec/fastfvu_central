@@ -21,12 +21,7 @@ const googleClient = new OAuth2Client(GOOGLE_CLIENT_ID);
 app.use(cors());
 app.use(express.json());
 
-// Set up temporary storage for uploaded files for GUI automation
-const uploadDir = path.join(process.cwd(), "tmp_uploads");
-if (!fs.existsSync(uploadDir)) {
-  fs.mkdirSync(uploadDir, { recursive: true });
-}
-
+// Using memoryStorage for file uploads (Vercel serverless safe)
 const storage = multer.memoryStorage();
 const upload = multer({ storage });
 
