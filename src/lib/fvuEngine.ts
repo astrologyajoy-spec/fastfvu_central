@@ -367,25 +367,21 @@ export async function executeFVU(
     // Write the input text file with UTF-8 encoding
     await fs.writeFile(inputFilePath, fileContent, { encoding: 'utf-8' });
 
-    // Build full classpath including fvu-tool JARs
+    // Build full classpath including fvu-tool JARs and scripts directory
     const jarDir = path.dirname(route.jarPath);
-    const cpString = `${route.jarPath}:${jarDir}/*:.`;
+    const scriptsDir = path.resolve(process.cwd(), 'scripts');
+    const cpString = `${scriptsDir}:${route.jarPath}:${jarDir}/*:.`;
     const fvuVersionArg = headerDetails.rpuVersion || '8.5';
 
-    // Direct NSDL Standalone CLI Signature for com.tin.FVU.FVU:
-    // java -Dfile.encoding=UTF-8 -Djava.awt.headless=true -cp "<CLASSPATH>" com.tin.FVU.FVU <TXT_PATH> <ERR_PATH> <FVU_PATH> 0 <CSI_PATH> 0 <VERSION>
+    // Execute Desktop GUI Automator (Swing Thread + XVFB)
     let jvmArgs = [
       '-Dfile.encoding=UTF-8',
-      '-Djava.awt.headless=true',
       '-cp',
       cpString,
-      'com.tin.FVU.FVU',
+      'FVUGUIAutomator',
       inputFilePath,
       errorFilePath,
-      fvuFilePath,
-      '0',
       csiFilePath,
-      '0',
       fvuVersionArg
     ];
 
