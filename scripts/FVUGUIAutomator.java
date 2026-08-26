@@ -103,9 +103,10 @@ public class FVUGUIAutomator {
                     targetBtn.doClick();
                 });
             } else {
+                final JFrame targetFrame = mainFrame;
                 System.err.println("[WARN] 'Validate' button not found by label, triggering Enter key / default button...");
                 SwingUtilities.invokeAndWait(() -> {
-                    JButton defaultBtn = mainFrame.getRootPane().getDefaultButton();
+                    JButton defaultBtn = targetFrame.getRootPane().getDefaultButton();
                     if (defaultBtn != null) {
                         defaultBtn.doClick();
                     }
