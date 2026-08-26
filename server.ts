@@ -1,11 +1,11 @@
-import { executeFVU, generateNativeNodeFVU } from "./src/lib/fvuEngine";
-import { uploadToSupabase } from "./src/lib/storage";
+import { executeFVU, generateNativeNodeFVU } from "./src/lib/fvuEngine.js";
+import { uploadToSupabase } from "./src/lib/storage.js";
 import express from "express";
 import path from "path";
 import os from "os";
 import dotenv from "dotenv";
 import { OAuth2Client } from "google-auth-library";
-import { pool } from "./src/lib/db";
+import { pool } from "./src/lib/db.js";
 import multer from "multer";
 import { spawn } from "child_process";
 import fs from "fs";
