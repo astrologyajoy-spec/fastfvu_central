@@ -81,20 +81,21 @@ function run() {
   appendLog(`[INFO] Computed Classpath: ${cpString}`);
 
   // Attempt to compile Desktop GUI Automator if javac is available
-  const automatorJava = path.join(process.cwd(), 'scripts', 'FVUGUIAutomator.java');
+  const automatorDir = path.join(process.cwd(), 'scripts');
+  const automatorJava = path.join(automatorDir, 'FVUGUIAutomator.java');
   let hasAutomator = false;
   try {
     if (fs.existsSync(automatorJava)) {
       appendLog(`[INFO] Compiling Desktop GUI Automator: ${automatorJava}`);
-      execSync(`javac -cp "${cpString}" "${automatorJava}"`, { stdio: 'pipe' });
+      execSync(`javac -cp "${cpString}" -d "${automatorDir}" "${automatorJava}"`, { stdio: 'pipe' });
       hasAutomator = true;
-      appendLog(`[OK] FVUGUIAutomator compiled successfully.`);
+      appendLog(`[OK] FVUGUIAutomator compiled successfully to ${automatorDir}.`);
     }
   } catch (err) {
     appendLog(`[NOTE] javac compilation skipped (${err.message}), using standard entry point.`);
   }
 
-  const automatorCp = `${path.join(process.cwd(), 'scripts')}:${cpString}`;
+  const automatorCp = `${automatorDir}:.:${cpString}`;
 
   console.log("\n--- 3. EXECUTING JAVA ENGINE ---");
 
