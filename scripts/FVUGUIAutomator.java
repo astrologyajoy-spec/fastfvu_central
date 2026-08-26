@@ -3,122 +3,89 @@ import javax.swing.text.JTextComponent;
 import java.awt.*;
 import java.awt.event.ActionEvent;
 import java.awt.event.ActionListener;
-import java.awt.event.KeyEvent;
 import java.io.BufferedReader;
 import java.io.File;
 import java.io.FileReader;
-import java.lang.reflect.Method;
 import java.util.ArrayList;
 import java.util.List;
 
 public class FVUGUIAutomator {
     public static void main(String[] args) {
         System.out.println("=========================================================");
-        System.out.println("     NSDL FVU Desktop GUI Automation Engine (Xvfb)      ");
+        System.out.println("   NSDL FVU Pure Desktop GUI Automation Runner (Xvfb)   ");
         System.out.println("=========================================================");
 
         if (args.length < 3) {
-            System.err.println("Usage: java FVUGUIAutomator <txtPath> <errPath> <csiPath> [fvuVersion]");
+            System.err.println("Usage: java FVUGUIAutomator <txtPath> <errPath> <csiPath>");
             System.exit(1);
         }
 
         final String txtPath = args[0];
         final String errPath = args[1];
         final String csiPath = args[2];
-        final String versionStr = (args.length >= 4) ? args[3] : "8.5";
 
         System.out.println("[GUI Automator] Input TXT Path: " + txtPath);
-        System.out.println("[GUI Automator] Error Log Path: " + errPath);
+        System.out.println("[GUI Automator] Error/Output Log Path: " + errPath);
         System.out.println("[GUI Automator] CSI Challan Path: " + csiPath);
-        System.out.println("[GUI Automator] Target Version: " + versionStr);
 
         final String expectedFvu = errPath.replaceAll("\\.err$", ".fvu");
 
         try {
-            // Step 1: Launch NSDL FVU Desktop GUI on Swing EDT
-            System.out.println("[GUI Automator] Launching NSDL FVU Desktop Window (com.tin.FVU.FVU)...");
+            // Step 1: Launch NSDL FVU Desktop GUI with ZERO arguments (Pure Desktop Mode)
+            System.out.println("[GUI Automator] Launching NSDL Desktop GUI (com.tin.FVU.FVU.main(new String[0]))...");
             SwingUtilities.invokeLater(() -> {
                 try {
                     com.tin.FVU.FVU.main(new String[0]);
                 } catch (Throwable t) {
-                    System.err.println("[GUI Automator] Note on com.tin.FVU.FVU.main(new String[0]): " + t.getMessage());
+                    System.err.println("[GUI Automator] Error starting NSDL GUI: " + t.getMessage());
+                    t.printStackTrace();
                 }
             });
 
-            // Step 2: Poll for visible Window / Frame
-            System.out.println("[GUI Automator] Waiting for GUI window to render...");
+            // Step 2: Wait for main visible Desktop Window
+            System.out.println("[GUI Automator] Waiting for GUI Window to render...");
             Window mainWindow = null;
-            for (int i = 0; i < 30; i++) {
+            for (int i = 0; i < 50; i++) {
                 Thread.sleep(200);
                 mainWindow = findActiveWindow();
                 if (mainWindow != null) break;
             }
 
-            // Fallback launch if no window appeared yet
             if (mainWindow == null) {
-                System.out.println("[GUI Automator] Initial window poll empty. Re-invoking GUI main on EDT...");
-                SwingUtilities.invokeAndWait(() -> {
-                    try {
-                        com.tin.FVU.FVU.main(new String[]{txtPath, errPath, expectedFvu, "0", csiPath, "0", versionStr});
-                    } catch (Throwable t) {
-                        System.err.println("[GUI Automator] Secondary launch note: " + t.getMessage());
-                    }
-                });
-                for (int i = 0; i < 20; i++) {
-                    Thread.sleep(200);
-                    mainWindow = findActiveWindow();
-                    if (mainWindow != null) break;
-                }
-            }
-
-            if (mainWindow == null) {
-                System.out.println("[GUI Automator] NOTICE: No Swing Window detected. Running internal fallback validator...");
-                runInternalFallback(txtPath, errPath, expectedFvu, csiPath, versionStr);
-                checkAndReportOutput(expectedFvu, errPath);
-                System.exit(0);
+                System.err.println("[GUI Automator] ERROR: Desktop Window did not open within 10 seconds.");
+                System.exit(1);
                 return;
             }
 
             final Window activeWindow = mainWindow;
             String title = (activeWindow instanceof Frame) ? ((Frame) activeWindow).getTitle() : activeWindow.getName();
-            System.out.println("[GUI Automator] Active GUI Window Found: " + title + " (" + activeWindow.getClass().getName() + ")");
+            System.out.println("[GUI Automator] Active Window Found: " + title + " (" + activeWindow.getClass().getName() + ")");
 
-            // Step 3: Find & populate text components
+            // Step 3: Locate and populate text field inputs on the Desktop GUI
             final List<Component> textComponents = new ArrayList<>();
             findTextComponents(activeWindow, textComponents);
-            System.out.println("[GUI Automator] Found " + textComponents.size() + " text field inputs in GUI window.");
+            System.out.println("[GUI Automator] Detected " + textComponents.size() + " text input fields in GUI.");
 
             SwingUtilities.invokeAndWait(() -> {
                 if (textComponents.size() >= 3) {
                     setTextValue(textComponents.get(0), txtPath);
                     setTextValue(textComponents.get(1), errPath);
                     setTextValue(textComponents.get(2), csiPath.equals("0") ? "" : csiPath);
-                    System.out.println("[GUI Automator] Populated 3 GUI text fields (TXT, Output/ERR, CSI).");
+                    System.out.println("[GUI Automator] Populated 3 text fields (TXT Path, ERR Output Path, CSI Path).");
                 } else if (textComponents.size() >= 2) {
                     setTextValue(textComponents.get(0), txtPath);
                     setTextValue(textComponents.get(1), errPath);
-                    System.out.println("[GUI Automator] Populated 2 GUI text fields (TXT, Output/ERR).");
+                    System.out.println("[GUI Automator] Populated 2 text fields (TXT Path, ERR Output Path).");
                 } else if (textComponents.size() >= 1) {
                     setTextValue(textComponents.get(0), txtPath);
-                    System.out.println("[GUI Automator] Populated 1 GUI text field (TXT).");
+                    System.out.println("[GUI Automator] Populated 1 text field (TXT Path).");
                 }
             });
 
-            // Step 4: Dropdown / Combo version selection
-            final List<Component> comboComponents = new ArrayList<>();
-            findComboComponents(activeWindow, comboComponents);
-            if (!comboComponents.isEmpty()) {
-                SwingUtilities.invokeAndWait(() -> {
-                    for (Component combo : comboComponents) {
-                        selectComboVersion(combo, versionStr);
-                    }
-                });
-            }
-
-            // Step 5: Locate and trigger "Validate" button
+            // Step 4: Locate and click "Validate" button on Desktop GUI
             final List<Component> buttonComponents = new ArrayList<>();
             findButtonComponents(activeWindow, buttonComponents);
-            System.out.println("[GUI Automator] Found " + buttonComponents.size() + " buttons in GUI window.");
+            System.out.println("[GUI Automator] Detected " + buttonComponents.size() + " buttons in GUI.");
 
             Component validateBtn = null;
             for (Component btn : buttonComponents) {
@@ -133,64 +100,42 @@ public class FVUGUIAutomator {
                 final Component targetBtn = validateBtn;
                 System.out.println("[GUI Automator] Found 'Validate' Button: " + getButtonText(targetBtn));
                 SwingUtilities.invokeAndWait(() -> {
-                    System.out.println("[GUI Automator] Pressing 'Validate' button on Desktop GUI...");
+                    System.out.println("[GUI Automator] Triggering click on 'Validate' button...");
                     clickButton(targetBtn);
                 });
             } else if (!buttonComponents.isEmpty()) {
                 final Component fallbackBtn = buttonComponents.get(0);
                 System.out.println("[GUI Automator] Triggering primary button: " + getButtonText(fallbackBtn));
                 SwingUtilities.invokeAndWait(() -> clickButton(fallbackBtn));
-            } else if (activeWindow instanceof JFrame) {
-                final JFrame jf = (JFrame) activeWindow;
-                SwingUtilities.invokeAndWait(() -> {
-                    JButton defBtn = jf.getRootPane().getDefaultButton();
-                    if (defBtn != null) {
-                        System.out.println("[GUI Automator] Triggering RootPane Default Button...");
-                        defBtn.doClick();
-                    }
-                });
             }
 
-            // Step 6: Monitor validation progress and auto-dismiss modal popup dialogs
-            System.out.println("[GUI Automator] Monitoring validation execution...");
-            boolean finished = false;
+            // Step 5: Poll for output files (.fvu or .err) and dismiss popup dialogs
+            System.out.println("[GUI Automator] Monitoring GUI validation execution...");
+            boolean completed = false;
 
-            for (int sec = 0; sec < 40; sec++) {
+            for (int sec = 0; sec < 60; sec++) {
                 Thread.sleep(500);
 
-                // Auto-dismiss popups (alerts, dialogs, completion popups)
+                // Auto-dismiss popup message dialogs (e.g., "File Validated Successfully" or alerts)
                 dismissDialogs(activeWindow);
 
                 if (new File(expectedFvu).exists() || new File(errPath).exists()) {
-                    System.out.println("[GUI Automator] SUCCESS: Validation output generated in " + (sec * 0.5) + " seconds.");
-                    finished = true;
+                    System.out.println("[GUI Automator] SUCCESS: Validation output created in " + (sec * 0.5) + " seconds.");
+                    completed = true;
                     break;
                 }
-
-                // Intermediate trigger if button click was silent (after 5 seconds)
-                if (sec == 10 && !new File(expectedFvu).exists() && !new File(errPath).exists()) {
-                    System.out.println("[GUI Automator] Intermediate trigger: Re-invoking validator logic on Swing EDT...");
-                    runInternalFallback(txtPath, errPath, expectedFvu, csiPath, versionStr);
-                }
             }
 
-            if (!finished) {
-                if (!new File(expectedFvu).exists() && !new File(errPath).exists()) {
-                    System.out.println("[GUI Automator] Final Trigger: Invoking direct validation engine...");
-                    runInternalFallback(txtPath, errPath, expectedFvu, csiPath, versionStr);
-                }
+            if (!completed) {
+                System.out.println("[GUI Automator] TIMEOUT: No output generated after 30 seconds.");
             }
 
-            // Step 7: Output error report content if .err was produced
+            // Step 6: Print validation error log (.err) if produced
             checkAndReportOutput(expectedFvu, errPath);
 
         } catch (Throwable t) {
-            System.err.println("[GUI Automator] Exception during GUI execution: " + t.getMessage());
+            System.err.println("[GUI Automator] Fatal Exception: " + t.getMessage());
             t.printStackTrace();
-            try {
-                runInternalFallback(txtPath, errPath, expectedFvu, csiPath, versionStr);
-                checkAndReportOutput(expectedFvu, errPath);
-            } catch (Throwable ignored) {}
         } finally {
             System.exit(0);
         }
@@ -216,7 +161,7 @@ public class FVUGUIAutomator {
         Window[] windows = Window.getWindows();
         for (Window w : windows) {
             if (w != mainWindow && w.isVisible() && (w instanceof Dialog || w instanceof JDialog)) {
-                System.out.println("[GUI Automator] Detected Dialog Popup: " + w.getClass().getName() + ". Dismissing...");
+                System.out.println("[GUI Automator] Dismissing Popup Dialog: " + w.getClass().getName());
                 final Window pop = w;
                 SwingUtilities.invokeLater(() -> {
                     try {
@@ -230,17 +175,6 @@ public class FVUGUIAutomator {
                     } catch (Throwable ignored) {}
                 });
             }
-        }
-    }
-
-    private static void runInternalFallback(String txtPath, String errPath, String fvuPath, String csiPath, String versionStr) {
-        try {
-            System.out.println("[GUI Automator] Executing com.tin.FVU.FVU.main fallback signature...");
-            com.tin.FVU.FVU.main(new String[]{
-                txtPath, errPath, fvuPath, "0", csiPath.equals("0") ? "0" : csiPath, "0", versionStr
-            });
-        } catch (Throwable t) {
-            System.err.println("[GUI Automator] Internal Engine Note: " + t.getMessage());
         }
     }
 
@@ -289,46 +223,11 @@ public class FVUGUIAutomator {
         }
     }
 
-    private static void findComboComponents(Container container, List<Component> result) {
-        for (Component c : container.getComponents()) {
-            if (c instanceof JComboBox || c instanceof Choice) {
-                result.add(c);
-            }
-            if (c instanceof Container) {
-                findComboComponents((Container) c, result);
-            }
-        }
-    }
-
     private static void setTextValue(Component c, String text) {
         if (c instanceof JTextComponent) {
             ((JTextComponent) c).setText(text);
         } else if (c instanceof TextComponent) {
             ((TextComponent) c).setText(text);
-        }
-    }
-
-    private static void selectComboVersion(Component c, String versionStr) {
-        if (c instanceof JComboBox) {
-            JComboBox<?> box = (JComboBox<?>) c;
-            for (int i = 0; i < box.getItemCount(); i++) {
-                Object item = box.getItemAt(i);
-                if (item != null && item.toString().contains(versionStr)) {
-                    box.setSelectedIndex(i);
-                    System.out.println("[GUI Automator] Selected JComboBox Version: " + item);
-                    return;
-                }
-            }
-        } else if (c instanceof Choice) {
-            Choice choice = (Choice) c;
-            for (int i = 0; i < choice.getItemCount(); i++) {
-                String item = choice.getItem(i);
-                if (item != null && item.contains(versionStr)) {
-                    choice.select(i);
-                    System.out.println("[GUI Automator] Selected Choice Version: " + item);
-                    return;
-                }
-            }
         }
     }
 
