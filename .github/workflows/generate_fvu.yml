@@ -46,7 +46,7 @@ jobs:
           OUT_DIR="outputs"
           
           # Execute the Java GUI application headlessly using xvfb-run
-          xvfb-run java -cp "TDS_TCS_FVU.jar:*" com.tin.FVU.FVU "$TXT_FILE" "$CSI_FILE" "$OUT_DIR" "0" "1.2"
+          xvfb-run java -cp "fvu-tool/*:fvu-tool/TDS_STANDALONE_FVU_1.2.jar" com.tin.FVU.FVU "$TXT_FILE" "$CSI_FILE" "$OUT_DIR" "0" "1.2"
 
       - name: Upload Generated Output (FVU/ERR)
         uses: actions/upload-artifact@v4
