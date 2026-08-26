@@ -53,21 +53,28 @@ def main():
     jar_path = os.environ.get("JAR_PATH", "fvu-tool/TDS_STANDALONE_FVU_1.2.jar")
     jar_dir = os.path.dirname(jar_path)
     cp_string = f"{jar_path}:{jar_dir}/*:."
+    automator_java = os.path.join(os.path.dirname(__file__), "FVUGUIAutomator.java")
+    automator_cp = f"{os.path.dirname(__file__)}:{cp_string}"
 
+    # Compile Automator if needed
+    if os.path.exists(automator_java):
+        try:
+            subprocess.run(["javac", "-cp", cp_string, automator_java], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        except Exception:
+            pass
+
+    # Desktop GUI Window Automation inside Xvfb Virtual Display
     cmd = [
         "xvfb-run",
         "-a",
         "java",
         "-Dfile.encoding=UTF-8",
         "-cp",
-        cp_string,
-        "com.tin.FVU.FVU",
+        automator_cp,
+        "FVUGUIAutomator",
         txt_path,
         err_path,
-        fvu_path,
-        "0",
         csi_path if csi_path and csi_path != '0' else "0",
-        "0",
         "8.5"
     ]
 
