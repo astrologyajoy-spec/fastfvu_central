@@ -373,7 +373,7 @@ export async function executeFVU(
     const cpString = `${scriptsDir}:${route.jarPath}:${jarDir}/*:.`;
     const fvuVersionArg = headerDetails.rpuVersion || '8.5';
 
-    // Execute Desktop GUI Automator (Swing Thread + XVFB)
+    // Execute Pure Desktop GUI Automator (Swing Thread + XVFB)
     let jvmArgs = [
       '-Dfile.encoding=UTF-8',
       '-cp',
@@ -381,8 +381,7 @@ export async function executeFVU(
       'FVUGUIAutomator',
       inputFilePath,
       errorFilePath,
-      csiFilePath,
-      fvuVersionArg
+      csiFilePath
     ];
 
     let stdoutOutput = '';
