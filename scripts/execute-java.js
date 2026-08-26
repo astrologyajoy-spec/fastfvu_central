@@ -146,11 +146,32 @@ function run() {
   };
 
   const className = 'com.tin.FVU.FVU';
-  const versionsToTry = ['8.5', '1.2'];
+
+  // Extract RPU version from input file if available (e.g., from line 1 caret field 10)
+  let detectedVersion = '8.5';
+  try {
+    if (fs.existsSync(inputPath)) {
+      const firstChunk = fs.readFileSync(inputPath, 'utf8').substring(0, 1000);
+      const lines = firstChunk.split(/\r?\n/);
+      if (lines.length > 0) {
+        const parts = lines[0].split('^');
+        if (parts.length >= 10 && parts[9]) {
+          const verMatch = parts[9].match(/\d+(\.\d+)+/);
+          if (verMatch) {
+            detectedVersion = verMatch[0];
+          }
+        }
+      }
+    }
+  } catch (e) {}
+
+  // Desktop FVU expectations prefer 8.5 as primary default
+  const versionsToTry = Array.from(new Set([detectedVersion, '8.5', '1.2']));
   let res = { success: false };
 
-  appendLog(`\n[INFO] Executing Main Class: ${className}`);
+  appendLog(`\n[INFO] Executing Desktop-Style Entry Point: ${className}`);
   for (const ver of versionsToTry) {
+    appendLog(`[INFO] Attempting execution with FVU Version argument: "${ver}"`);
     const args = [
       `"${inputPath}"`,
       `"${errPath}"`,
@@ -158,7 +179,7 @@ function run() {
       '0',                                      // Parameter 4: Zero / Hash Flag
       csiPath !== '0' ? `"${csiPath}"` : '0',  // Parameter 5: CSI File Path
       '0',                                      // Parameter 6: Consolidated/Upload Flag
-      `"${ver}"`                                // Parameter 7: Version String ("8.5" or "1.2")
+      `"${ver}"`                                // Parameter 7: Version String (e.g. "8.5")
     ];
 
     res = tryExecute(`java -Dfile.encoding=UTF-8 -cp "${cpString}" ${className} ${args.join(' ')}`);
