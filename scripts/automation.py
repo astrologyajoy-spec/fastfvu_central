@@ -51,23 +51,24 @@ def main():
     # The standard NSDL arguments: <input.txt> <error.err> <output.fvu> 0 <challan.csi> 0 <version>
     
     jar_path = os.environ.get("JAR_PATH", "fvu-tool/TDS_STANDALONE_FVU_1.2.jar")
-    
-    # Ensure any old files are cleaned before starting
-    if os.path.exists(fvu_path):
-        os.remove(fvu_path)
-    if os.path.exists(err_path):
-        os.remove(err_path)
+    jar_dir = os.path.dirname(jar_path)
+    cp_string = f"{jar_path}:{jar_dir}/*:."
 
     cmd = [
+        "xvfb-run",
+        "-a",
         "java",
         "-Dfile.encoding=UTF-8",
-        "-jar",
-        jar_path,
+        "-cp",
+        cp_string,
+        "com.tin.FVU.FVU",
         txt_path,
         err_path,
         fvu_path,
         "0",
-        csi_path
+        csi_path if csi_path and csi_path != '0' else "0",
+        "0",
+        "8.5"
     ]
 
     try:
