@@ -92,13 +92,18 @@ function run() {
   console.log("\n--- 3. EXECUTING JAVA ENGINE ---");
 
   const tryExecute = (cmd) => {
-    appendLog(`\n[EXEC_CMD] ${cmd}`);
+    let finalCmd = cmd;
+    if (process.platform === 'linux') {
+      finalCmd = `xvfb-run -a -e xvfb_error.log ${cmd}`;
+    }
+    
+    appendLog(`\n[EXEC_CMD] ${finalCmd}`);
     try {
       // Clean up previous attempts to avoid false positives
       if (fs.existsSync(errPath)) fs.unlinkSync(errPath);
       if (fs.existsSync(fvuPath)) fs.unlinkSync(fvuPath);
 
-      const output = execSync(cmd, { 
+      const output = execSync(finalCmd, { 
         stdio: 'pipe', 
         timeout: 180000, 
         maxBuffer: 1024 * 1024 * 10 
@@ -110,6 +115,15 @@ function run() {
       appendLog(`Execution Output/Note: Command failed.`);
       if (err.stdout && err.stdout.length > 0) appendLog(`--- STDOUT ---\n${err.stdout.toString('utf8')}`);
       if (err.stderr && err.stderr.length > 0) appendLog(`--- STDERR ---\n${err.stderr.toString('utf8')}`);
+    }
+
+    if (fs.existsSync('xvfb_error.log')) {
+      try {
+        const xvfbErr = fs.readFileSync('xvfb_error.log', 'utf8');
+        if (xvfbErr.trim()) {
+          appendLog(`\n--- XVFB ERROR LOG ---\n${xvfbErr}`);
+        }
+      } catch(e) {}
     }
 
     const fvuCreated = fs.existsSync(fvuPath);
