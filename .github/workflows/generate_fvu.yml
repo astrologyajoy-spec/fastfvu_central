@@ -50,8 +50,9 @@ jobs:
           
           OUT_DIR="outputs"
           
-          # Execute the Java GUI application headlessly using xvfb-run -a
-          xvfb-run -a -e xvfb_error.log java -cp "fvu-tool/*:fvu-tool/TDS_STANDALONE_FVU_1.2.jar" com.tin.FVU.FVU "$TXT_FILE" "$OUT_DIR/err.err" "$OUT_DIR/fvu.fvu" "0" "$CSI_FILE" "0" "8.5" || (cat xvfb_error.log && exit 1)
+          # Compile and execute the Desktop GUI Automator
+          javac -cp "fvu-tool/*:fvu-tool/TDS_STANDALONE_FVU_1.2.jar" -d scripts/ scripts/FVUGUIAutomator.java
+          xvfb-run -a -e xvfb_error.log java -cp "scripts:.:fvu-tool/*:fvu-tool/TDS_STANDALONE_FVU_1.2.jar" FVUGUIAutomator "$TXT_FILE" "$OUT_DIR/err.err" "$CSI_FILE" "8.5" || (cat xvfb_error.log && exit 1)
           cat xvfb_error.log || true
 
       - name: Upload Generated Output (FVU/ERR)
