@@ -114,7 +114,7 @@ export function parseTdsHeader(fileContent: string): HeaderDetails {
  * based on the parsed Header Details.
  */
 export function resolveJarRoute(header: HeaderDetails, availableJars: string[] = []): JarRouteConfig {
-  let targetJar = 'TDS_TCS_FVU.jar';
+  let targetJar = 'TDS_STANDALONE_FVU_1.2.jar';
   let fvuVersionArg = '8.9';
   let htmlFlag = '0';
   let consolidatedFlag = '0';
@@ -145,8 +145,8 @@ export function resolveJarRoute(header: HeaderDetails, availableJars: string[] =
     }
   }
 
-  // CLI Command Generator: java -Dfile.encoding=UTF-8 -jar <JAR> <TXT> <ERR> <FVU> <CONSOLIDATED> <CSI> <HTML> <VERSION>
-  const cliCommandSample = `java -Dfile.encoding=UTF-8 -jar "${jarPath}" "<INPUT_TXT_PATH>" "<OUTPUT_ERR_PATH>" "<OUTPUT_FVU_PATH>" ${consolidatedFlag} "<CSI_FILE_PATH_OR_0>" ${htmlFlag} "${fvuVersionArg}"`;
+  // CLI Command Generator: java -Dfile.encoding=UTF-8 -jar <JAR> <TXT> <ERR> <FVU> <CONSOLIDATED> <CSI>
+  const cliCommandSample = `java -Dfile.encoding=UTF-8 -jar "${jarPath}" "<INPUT_TXT_PATH>" "<OUTPUT_ERR_PATH>" "<OUTPUT_FVU_PATH>" ${consolidatedFlag} "<CSI_FILE_PATH_OR_0>"`;
 
   return {
     jarName: targetJar,
@@ -367,19 +367,25 @@ export async function executeFVU(
     // Write the input text file with UTF-8 encoding
     await fs.writeFile(inputFilePath, fileContent, { encoding: 'utf-8' });
 
-    // CLI Arguments for NSDL Standalone JAR:
-    // <TXT_PATH> <ERR_PATH> <FVU_PATH> <CONSOLIDATED_FLAG> <CSI_PATH_OR_0> <HTML_FLAG> <VERSION>
-    const jvmArgs = [
+    // Build full classpath including fvu-tool JARs
+    const jarDir = path.dirname(route.jarPath);
+    const cpString = `${route.jarPath}:${jarDir}/*:.`;
+    const fvuVersionArg = headerDetails.rpuVersion || '8.5';
+
+    // CLI Arguments for NSDL Standalone Class com.tin.FVU.FVU:
+    // <input.txt> <error.err> <output.fvu> 0 <challan.csi> 0 <version>
+    let jvmArgs = [
       '-Dfile.encoding=UTF-8',
-      '-jar',
-      route.jarPath,
+      '-cp',
+      cpString,
+      'com.tin.FVU.FVU',
       inputFilePath,
       errorFilePath,
       fvuFilePath,
-      route.consolidatedFlag,
+      '0',
       csiFilePath,
-      route.htmlFlag,
-      route.fvuVersionArg
+      '0',
+      fvuVersionArg
     ];
 
     let stdoutOutput = '';
@@ -412,8 +418,34 @@ export async function executeFVU(
 
     const workingDir = tempDir;
 
-    await new Promise<void>((resolve) => {
-      execFile(selectedJava, jvmArgs, { cwd: workingDir, encoding: 'utf-8', maxBuffer: 10 * 1024 * 1024 }, (err, stdout, stderr) => {
+    await new Promise<void>(async (resolve) => {
+      let execCmd = selectedJava;
+      let finalArgs = jvmArgs;
+
+      // Linux headless display wrapper check
+      if (os.platform() === 'linux') {
+        execCmd = 'xvfb-run';
+        finalArgs = ['-a', selectedJava, ...jvmArgs];
+      } else if (os.platform() === 'win32') {
+        const batPath = route.jarPath.replace(/\.jar$/i, '.bat');
+        try {
+          await fs.access(batPath);
+          execCmd = batPath;
+          finalArgs = [
+            inputFilePath,
+            errorFilePath,
+            fvuFilePath,
+            '0',
+            csiFilePath,
+            '0',
+            fvuVersionArg
+          ];
+        } catch (e) {
+          // bat not found, fallback to java
+        }
+      }
+
+      execFile(execCmd, finalArgs, { cwd: workingDir, encoding: 'utf-8', maxBuffer: 10 * 1024 * 1024 }, (err, stdout, stderr) => {
         if (err) {
           javaExecError = err;
           console.warn("NSDL Java process warning/exit:", err.message);
