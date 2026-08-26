@@ -25,11 +25,10 @@ public class FVUGUIAutomator {
         // Background Polling & Automation Thread
         Thread automationThread = new Thread(() -> {
             try {
-                // ১. উইন্ডো পুরোপুরি রেন্ডার হওয়ার জন্য ৪ সেকেন্ড অপেক্ষা করুন
                 System.out.println("[GUI Automator] Waiting for UI components to render...");
                 Thread.sleep(4000);
 
-                int maxTries = 15;
+                int maxTries = 20;
                 for (int attempt = 1; attempt <= maxTries; attempt++) {
                     System.out.println("[GUI Automator] Polling attempt " + attempt + " of " + maxTries + "...");
                     
@@ -39,7 +38,7 @@ public class FVUGUIAutomator {
                         pathsFilled = true;
                         break;
                     }
-                    Thread.sleep(2000); // প্রতি ২ সেকেন্ড পর পর চেক করবে
+                    Thread.sleep(2000);
                 }
 
                 if (!pathsFilled) {
@@ -70,33 +69,42 @@ public class FVUGUIAutomator {
         Window[] windows = Window.getWindows();
         for (Window window : windows) {
             if (window.isShowing() && (window instanceof JFrame || window instanceof JDialog)) {
-                boolean filled = searchContainer(window, txt, err, csi);
+                boolean filled = searchAndFillContainer(window, txt, err, csi);
                 if (filled) return true;
             }
         }
         return false;
     }
 
-    private static boolean searchContainer(Container container, String txt, String err, String csi) {
+    private static boolean searchAndFillContainer(Container container, String txt, String err, String csi) {
         Component[] components = container.getComponents();
         int textFieldsFound = 0;
 
         for (Component comp : components) {
             if (comp instanceof JTextField) {
                 JTextField tf = (JTextField) comp;
+                
+                // Lambda-র জন্য ইনডেক্স ফাইনাল ভ্যারিয়েবলে রূপান্তর করা হলো
+                final int index = textFieldsFound; 
+
                 SwingUtilities.invokeLater(() -> {
-                    // ফিল্ডের সাইজ বা পজিশন দেখে টেক্সট বসানোর লজিক
-                    if (tf.getText().isEmpty() || textFieldsFound == 0) {
-                        tf.setText(txt);
+                    if (tf.getText() == null || tf.getText().trim().isEmpty()) {
+                        if (index == 0) {
+                            tf.setText(txt);
+                        } else if (index == 1) {
+                            tf.setText(err);
+                        } else if (index >= 2) {
+                            tf.setText(csi);
+                        }
                     }
                 });
                 textFieldsFound++;
             } else if (comp instanceof Container) {
-                if (searchContainer((Container) comp, txt, err, csi)) {
+                if (searchAndFillContainer((Container) comp, txt, err, csi)) {
                     return true;
                 }
             }
         }
-        return textFieldsFound >= 2; // কম পক্ষে টেক্সট ফিল্ডগুলো পেলে ট্রু রিটার্ন করবে
+        return textFieldsFound >= 2;
     }
 }
