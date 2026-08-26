@@ -190,12 +190,14 @@ function run() {
   ]));
   let res = { success: false };
 
-  appendLog(`\n[INFO] Executing NSDL Standalone FVU via Direct CLI Signature...`);
+  appendLog(`\n[INFO] Executing Desktop-Style GUI Automator Entry Point (Swing EDT + Xvfb)...`);
   for (const ver of versionsToTry) {
-    appendLog(`[INFO] Attempting execution with com.tin.FVU.FVU, Version argument: "${ver}"`);
-    
-    const cliCmd = `java -Dfile.encoding=UTF-8 -cp "${cpString}" ${className} "${inputPath}" "${errPath}" "${fvuPath}" 0 "${csiPath}" 0 "${ver}"`;
-    res = tryExecute(cliCmd);
+    appendLog(`[INFO] Running FVUGUIAutomator with Version Parameter: "${ver}"`);
+    let guiCmd = `java -Dfile.encoding=UTF-8 -cp "${automatorCp}" FVUGUIAutomator "${inputPath}" "${errPath}" "${csiPath !== '0' ? csiPath : '0'}" "${ver}"`;
+    if (process.platform === 'linux') {
+      guiCmd = `xvfb-run -a -e xvfb_error.log ${guiCmd}`;
+    }
+    res = tryExecute(guiCmd);
     if (res.success) break;
   }
 
